@@ -4,7 +4,7 @@ import time
 
 from config import DEFAULT_URL
 
-from riden import Delayed, Modbus, Reconnectable, Riden, KeepAlive
+from riden import Delayed, KeepAlive, Modbus, Reconnectable, Riden
 
 with Riden(Reconnectable(KeepAlive(Delayed(Modbus(DEFAULT_URL))))) as rd:
     rd.write(v_set=12, en=True)

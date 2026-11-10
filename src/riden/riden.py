@@ -61,7 +61,7 @@ class Riden(AbstractContextManager):
         if not selected:
             return {}
 
-        not_readable = [field.value for field in selected if not field.is_readable]
+        not_readable = [field.label for field in selected if not field.is_readable]
         if not_readable:
             raise ValueError(f"fields are not readable: {', '.join(not_readable)}")
 
@@ -93,18 +93,18 @@ class Riden(AbstractContextManager):
         encoded: dict[Field, list[int]] = {}
         for field, value in updates.items():
             if not field.is_writable:
-                raise ValueError(f"field is not writable: {field.value}")
+                raise ValueError(f"field is not writable: {field.label}")
 
             raw = field.write(value, self.model)
             regs = [raw] if isinstance(raw, int) else raw
             if len(regs) != field.count:
                 raise ValueError(
-                    f"field {field.value} produced {len(regs)} registers, "
+                    f"field {field.label} produced {len(regs)} registers, "
                     f"expected {field.count}"
                 )
             if any(not 0 <= reg <= 0xFFFF for reg in regs):
                 raise ValueError(
-                    f"field {field.value} produced out-of-range registers: {regs}"
+                    f"field {field.label} produced out-of-range registers: {regs}"
                 )
             encoded[field] = regs
 
