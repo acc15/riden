@@ -1,0 +1,25 @@
+[project]
+name = "riden"
+version = "0.1.0"
+description = "Riden python client with Bluetooth support"
+readme = "README.md"
+authors = [
+    { name = "Vyacheslav Mayorov", email = "vyacheslav.mayorov@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "minimalmodbus>=2.1.1",
+    "pyserial>=3.5",
+]
+
+[tool.ruff]
+src = ["src"]
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.4",
+]
