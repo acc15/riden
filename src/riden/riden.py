@@ -149,7 +149,7 @@ class Riden(AbstractContextManager["Riden"]):
         # value does not leave the device partially updated.
         session = self._require_open()
         model = cast(Model, self.model)
-        encoded: dict[Field, list[int]] = {}
+        encoded: dict[Field, tuple[int, ...]] = {}
         for field, value in updates.items():
             writer = field.write
             if writer is None:
@@ -168,16 +168,22 @@ class Riden(AbstractContextManager["Riden"]):
             encoded[field] = regs
 
         # Merge fields into contiguous blocks; Modbus cannot write sparse
-        # register lists in one transaction.
-        blocks: list[tuple[int, list[int]]] = []
+        # register lists in one transaction.  Register data is immutable, so
+        # overlaying a field rebuilds the block tuple instead of mutating it.
+        blocks: list[tuple[int, tuple[int, ...]]] = []
         for field, regs in sorted(encoded.items(), key=lambda item: item[0].addr):
             if blocks:
                 block_start, block_regs = blocks[-1]
                 offset = field.addr - block_start
                 if offset <= len(block_regs):
-                    block_regs[offset:offset + len(regs)] = regs
+                    blocks[-1] = (
+                        block_start,
+                        block_regs[:offset]
+                        + regs
+                        + block_regs[offset + len(regs):],
+                    )
                     continue
-            blocks.append((field.addr, list(regs)))
+            blocks.append((field.addr, regs))
 
         for start, regs in blocks:
             session.execute(Tx.write(start, regs))

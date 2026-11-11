@@ -11,26 +11,26 @@ from riden.field import (
     Field,
     compose,
     div,
-    div_reg,
-    flag,
     flatten_fields,
-    mode,
-    number,
-    protection,
+    read_div,
     read_dw,
+    read_flag,
     read_i,
+    read_int,
+    read_mode,
+    read_protection,
     read_temp,
     read_v,
     write_i,
-    write_number,
+    write_int,
     write_v,
 )
 from riden.model import Model
 
 MODEL = Model.RD6006P
 
-type Reader = Callable[[list[int], Model], Any]
-type Writer = Callable[[Any, Model], list[int]]
+type Reader = Callable[[tuple[int, ...], Model], Any]
+type Writer = Callable[[Any, Model], tuple[int, ...]]
 
 
 def reader_of(field: Field) -> Reader:
@@ -74,67 +74,67 @@ def test_field_lookup_rejects_unknown_values() -> None:
 def test_readable_and_writable_flags() -> None:
     assert Field.V.is_readable
     assert not Field.V.is_writable
-    assert Field.CAL_DATE.is_writable
-    assert not Field.CAL_DATE.is_readable
+    assert Field.CAL_COMMIT.is_writable
+    assert not Field.CAL_COMMIT.is_readable
     assert Field.V_SET.is_readable
     assert Field.V_SET.is_writable
 
 
 def test_scalar_readers() -> None:
-    assert flag([0], MODEL) is False
-    assert flag([1], MODEL) is True
-    assert number([42], MODEL) == 42
-    assert protection([0], MODEL) is Protection.NONE
-    assert protection([2], MODEL) is Protection.OCP
-    assert mode([0], MODEL) is Mode.CV
-    assert mode([1], MODEL) is Mode.CC
+    assert read_flag((0,), MODEL) is False
+    assert read_flag((1,), MODEL) is True
+    assert read_int((42,), MODEL) == 42
+    assert read_protection((0,), MODEL) is Protection.NONE
+    assert read_protection((2,), MODEL) is Protection.OCP
+    assert read_mode((0,), MODEL) is Mode.CV
+    assert read_mode((1,), MODEL) is Mode.CC
 
 
 def test_multiregister_readers() -> None:
-    assert read_dw([0x0001, 0x0002], MODEL) == 0x10002
-    assert read_temp([0, 25], MODEL) == 25
-    assert read_temp([1, 25], MODEL) == -25
+    assert read_dw((0x0001, 0x0002), MODEL) == 0x10002
+    assert read_temp((0, 25), MODEL) == 25
+    assert read_temp((1, 25), MODEL) == -25
 
 
 def test_scaled_readers_use_model_scales() -> None:
-    assert read_v([12500], MODEL) == 12.5
-    assert read_i([10000], MODEL) == 1.0
-    assert read_v([12500], Model.RD6006) == 125.0
-    assert div_reg(100, [1234], MODEL) == 12.34
+    assert read_v((12500,), MODEL) == 12.5
+    assert read_i((10000,), MODEL) == 1.0
+    assert read_v((12500,), Model.RD6006) == 125.0
+    assert read_div(100, (1234,), MODEL) == 12.34
     assert div(100, 6000, MODEL) == 60.0
 
 
 def test_compose_chains_mappers() -> None:
     reader = compose(read_dw, partial(div, 100))
-    assert reader([0, 6000], MODEL) == 60.0
+    assert reader((0, 6000), MODEL) == 60.0
 
 
-def test_scalar_writers_always_return_register_lists() -> None:
-    assert write_number(7, MODEL) == [7]
-    assert write_number(True, MODEL) == [1]
-    assert write_v(12.5, MODEL) == [12500]
-    assert write_i(1.0, MODEL) == [10000]
-    assert write_v(62.0, MODEL, off=2) == [62000]
+def test_scalar_writers_always_return_register_tuples() -> None:
+    assert write_int(7, MODEL) == (7,)
+    assert write_int(True, MODEL) == (1,)
+    assert write_v(12.5, MODEL) == (12500,)
+    assert write_i(1.0, MODEL) == (10000,)
+    assert write_v(62.0, MODEL, off=2) == (62000,)
 
 
 def test_writers_clamp_to_model_limits() -> None:
-    assert write_v(-5.0, MODEL) == [0]
-    assert write_v(100.0, MODEL) == [60000]
-    assert write_i(100.0, MODEL) == [60000]
+    assert write_v(-5.0, MODEL) == (0,)
+    assert write_v(100.0, MODEL) == (60000,)
+    assert write_i(100.0, MODEL) == (60000,)
 
 
 def test_field_readers() -> None:
-    assert reader_of(Field.V_SET)([12500], MODEL) == 12.5
-    assert reader_of(Field.FW)([1234], MODEL) == 12.34
-    assert reader_of(Field.P)([0, 6000], MODEL) == 60.0
-    assert reader_of(Field.TEMP_C)([1, 5], MODEL) == -5
-    assert reader_of(Field.PROTECTION)([2], MODEL) is Protection.OCP
+    assert reader_of(Field.V_SET)((12500,), MODEL) == 12.5
+    assert reader_of(Field.FW)((1234,), MODEL) == 12.34
+    assert reader_of(Field.P)((0, 6000), MODEL) == 60.0
+    assert reader_of(Field.TEMP_C)((1, 5), MODEL) == -5
+    assert reader_of(Field.PROTECTION)((2,), MODEL) is Protection.OCP
 
 
 def test_field_writers() -> None:
-    assert writer_of(Field.V_SET)(12.5, MODEL) == [12500]
-    assert writer_of(Field.EN)(True, MODEL) == [1]
-    assert writer_of(Field.M0_OVP)(62.0, MODEL) == [62000]
+    assert writer_of(Field.V_SET)(12.5, MODEL) == (12500,)
+    assert writer_of(Field.EN)(True, MODEL) == (1,)
+    assert writer_of(Field.M0_OVP)(62.0, MODEL) == (62000,)
 
 
 def test_flatten_fields_preserves_order_and_flattens() -> None:

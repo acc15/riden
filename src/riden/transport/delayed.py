@@ -14,7 +14,7 @@ class DelayedSession(Session):
         self.delay = delay
 
     @override
-    def execute(self, tx: Tx) -> list[int]:
+    def execute(self, tx: Tx) -> tuple[int, ...]:
         if self.delay > 0:
             time.sleep(self.delay)
         return self.inner.execute(tx)

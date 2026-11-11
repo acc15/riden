@@ -127,14 +127,14 @@ class MemorySession:
         self.closed = False
         self.fail_with: BaseException | None = None
 
-    def execute(self, tx: Tx) -> list[int]:
+    def execute(self, tx: Tx) -> tuple[int, ...]:
         if self.fail_with is not None:
             raise self.fail_with
         self.transactions.append(tx)
         if tx.op is Op.READ:
-            return self.registers[tx.start:tx.start + tx.count]
+            return tuple(self.registers[tx.start:tx.start + tx.count])
         self.registers[tx.start:tx.start + len(tx.data)] = tx.data
-        return []
+        return ()
 
     def close(self) -> None:
         self.closed = True
@@ -155,13 +155,13 @@ class MemoryTransport:
 class RecordingSession:
     """Session that records transactions and returns canned data."""
 
-    def __init__(self, result: list[int] | None = None) -> None:
-        self.result = [] if result is None else result
+    def __init__(self, result: tuple[int, ...] | None = None) -> None:
+        self.result = () if result is None else result
         self.transactions: list[Tx] = []
         self.closed = False
         self.fail_with: BaseException | None = None
 
-    def execute(self, tx: Tx) -> list[int]:
+    def execute(self, tx: Tx) -> tuple[int, ...]:
         self.transactions.append(tx)
         if self.fail_with is not None:
             raise self.fail_with

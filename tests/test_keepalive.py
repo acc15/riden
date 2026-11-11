@@ -41,11 +41,11 @@ def test_open_returns_scheduled_session() -> None:
 
 def test_execute_returns_inner_result_and_pushes_deadline() -> None:
     transport, inner = make()
-    inner.result = [7]
+    inner.result = (7,)
     session = transport.open()
     before = keepalive._scheduler._deadlines[session]
 
-    assert session.execute(Tx.read(8, 1)) == [7]
+    assert session.execute(Tx.read(8, 1)) == (7,)
     assert inner.transactions == [Tx.read(8, 1)]
     assert keepalive._scheduler._deadlines[session] >= before
 

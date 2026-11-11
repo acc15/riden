@@ -30,12 +30,12 @@ class Tx:
 
     op: Op
     start: int
-    count: int = 0
-    data: tuple[int, ...] = ()
+    count: int
+    data: tuple[int, ...]
 
     @classmethod
     def read(cls, start: int, count: int) -> Self:
-        return cls(Op.READ, start, count)
+        return cls(Op.READ, start, count, ())
 
     @classmethod
     def write(cls, start: int, data: Sequence[int]) -> Self:
@@ -46,7 +46,7 @@ class Tx:
 class Session(Protocol):
     """An open connection that executes one register transaction at a time."""
 
-    def execute(self, tx: Tx) -> list[int]: ...
+    def execute(self, tx: Tx) -> tuple[int, ...]: ...
 
     def close(self) -> None: ...
 

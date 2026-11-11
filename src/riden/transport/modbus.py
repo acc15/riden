@@ -77,7 +77,7 @@ class Modbus(Transport, Session):
             raise
 
     @override
-    def execute(self, tx: Tx) -> list[int]:
+    def execute(self, tx: Tx) -> tuple[int, ...]:
         # Both read_register/read_registers and write_register/write_registers
         # produce identical requests, so only the plural forms are used.
         # The port check matters: minimalmodbus reopens a closed port by
@@ -86,9 +86,9 @@ class Modbus(Transport, Session):
         if instrument is None or not self.port.is_open:
             raise RuntimeError("Modbus is not open")
         if tx.op is Op.READ:
-            return instrument.read_registers(tx.start, tx.count)
+            return tuple(instrument.read_registers(tx.start, tx.count))
         instrument.write_registers(tx.start, list(tx.data))
-        return []
+        return ()
 
     @override
     def close(self) -> None:

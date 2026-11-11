@@ -30,9 +30,9 @@ def test_stack_end_to_end(fake_instrument: type[FakeInstrument]) -> None:
     stack = build_transport(as_port(port), keepalive=None, delay=0)
 
     session = stack.open()
-    assert session.execute(Tx.read(0, 3)) == [60065, 0, 7]
-    assert session.execute(Tx.write(8, [5000])) == []
-    assert session.execute(Tx.read(8, 1)) == [5000]
+    assert session.execute(Tx.read(0, 3)) == (60065, 0, 7)
+    assert session.execute(Tx.write(8, [5000])) == ()
+    assert session.execute(Tx.read(8, 1)) == (5000,)
     session.close()
 
     assert port.opens == 1

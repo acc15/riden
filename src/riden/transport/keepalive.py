@@ -32,7 +32,7 @@ class KeepAliveSession(Session):
         self.lock = threading.RLock()
 
     @override
-    def execute(self, tx: Tx) -> list[int]:
+    def execute(self, tx: Tx) -> tuple[int, ...]:
         with self.lock:
             try:
                 result = self.inner.execute(tx)

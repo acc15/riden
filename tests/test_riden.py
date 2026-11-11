@@ -70,7 +70,7 @@ def test_read_nothing_does_no_io(
 
 def test_read_rejects_write_only_field(transport: MemoryTransport) -> None:
     with Riden(transport) as rd, pytest.raises(ValueError, match="not readable"):
-        rd.read(Field.CAL_DATE)
+        rd.read(Field.CAL_COMMIT)
 
 
 def test_read_before_open_fails(transport: MemoryTransport) -> None:

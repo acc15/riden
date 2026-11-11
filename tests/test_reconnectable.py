@@ -24,14 +24,14 @@ class FlakySession:
         self.kind = kind
         self.closed = False
 
-    def execute(self, tx: Tx) -> list[int]:
+    def execute(self, tx: Tx) -> tuple[int, ...]:
         if self.kind == "logic":
             raise LogicError("device said no")
         if self.closed or self.transport.failures:
             if self.transport.failures:
                 self.transport.failures -= 1
             raise LinkError("link down")
-        return [42]
+        return (42,)
 
     def close(self) -> None:
         self.closed = True
@@ -67,7 +67,7 @@ def test_open_returns_reconnectable_session() -> None:
 def test_happy_path() -> None:
     inner = FlakyTransport()
     session = make(inner).open()
-    assert session.execute(Tx.read(0, 1)) == [42]
+    assert session.execute(Tx.read(0, 1)) == (42,)
     assert inner.opens == 1
 
 
@@ -75,7 +75,7 @@ def test_link_error_reconnects_and_retries() -> None:
     inner = FlakyTransport(failures=1)
     session = make(inner).open()
 
-    assert session.execute(Tx.read(0, 1)) == [42]
+    assert session.execute(Tx.read(0, 1)) == (42,)
     assert inner.opens == 2
     assert inner.sessions[0].closed
     assert not inner.sessions[1].closed
@@ -94,9 +94,9 @@ def test_retry_budget_resets_for_each_transaction() -> None:
     inner = FlakyTransport(failures=1)
     session = make(inner, attempts=1).open()
 
-    assert session.execute(Tx.read(0, 1)) == [42]
+    assert session.execute(Tx.read(0, 1)) == (42,)
     inner.failures = 1
-    assert session.execute(Tx.read(0, 1)) == [42]
+    assert session.execute(Tx.read(0, 1)) == (42,)
     assert inner.opens == 3
 
 

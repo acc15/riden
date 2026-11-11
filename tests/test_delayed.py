@@ -17,10 +17,10 @@ def test_execute_sleeps_before_the_inner_call(
 ) -> None:
     slept: list[float] = []
     monkeypatch.setattr("time.sleep", slept.append)
-    inner = RecordingSession([1, 2])
+    inner = RecordingSession((1, 2))
     session = Delayed(RecordingTransport(inner), delay=0.25).open()
 
-    assert session.execute(Tx.read(0, 2)) == [1, 2]
+    assert session.execute(Tx.read(0, 2)) == (1, 2)
     assert slept == [0.25]
     assert inner.transactions == [Tx.read(0, 2)]
 

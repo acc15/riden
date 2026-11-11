@@ -41,9 +41,9 @@ def test_open_is_idempotent(fake_instrument: type[FakeInstrument]) -> None:
 
 def test_execute_reads_and_writes(fake_instrument: type[FakeInstrument]) -> None:
     modbus = Modbus(as_port(FakePort())).open()
-    assert modbus.execute(Tx.read(8, 1)) == [12500]
-    assert modbus.execute(Tx.write(8, [5000])) == []
-    assert modbus.execute(Tx.read(8, 1)) == [5000]
+    assert modbus.execute(Tx.read(8, 1)) == (12500,)
+    assert modbus.execute(Tx.write(8, [5000])) == ()
+    assert modbus.execute(Tx.read(8, 1)) == (5000,)
 
 
 def test_execute_before_open_fails(fake_instrument: type[FakeInstrument]) -> None:

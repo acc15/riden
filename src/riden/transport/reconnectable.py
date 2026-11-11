@@ -26,7 +26,7 @@ class ReconnectableSession(Session):
         self.session = session
 
     @override
-    def execute(self, tx: Tx) -> list[int]:
+    def execute(self, tx: Tx) -> tuple[int, ...]:
         attempts = 0
 
         def can_retry() -> bool:
