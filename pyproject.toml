@@ -15,11 +15,24 @@ dependencies = [
 [tool.ruff]
 src = ["src"]
 
+[tool.ty.rules]
+all = "error"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.poe.tasks]
+lint = ["ty check", "ruff check ."]
+check = ["ty check", "ruff check .", "pytest"]
+
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "poethepoet>=0.49.0",
+    "pytest>=9.2.0",
     "ruff>=0.17.4",
+    "ty>=0.0.100",
 ]

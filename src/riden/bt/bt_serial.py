@@ -15,12 +15,12 @@ serial interface.  For a configured but closed object use
 serial_for_url(..., do_not_open=True), or BtSerial(None) and set .port before
 open().
 """
-
 import contextlib
 import re
 import select
 import socket
 import time
+from typing import override
 
 import serial
 
@@ -36,7 +36,7 @@ def parse_mac(value: str) -> str:
     return value.replace("-", ":").upper()
 
 
-class BtSerial(contextlib.AbstractContextManager):
+class BtSerial(contextlib.AbstractContextManager["BtSerial"]):
 
     def __init__(self, 
         port: str | None = None, 
@@ -46,7 +46,7 @@ class BtSerial(contextlib.AbstractContextManager):
     ):
         self.port = port
         self.channel = channel
-        self.sock = None
+        self.sock: socket.socket | None = None
         self._buf = bytearray()
         self.timeout = timeout
         self.connect_timeout = connect_timeout
@@ -81,14 +81,16 @@ class BtSerial(contextlib.AbstractContextManager):
         return self.sock is not None
 
     # -- pyserial-compatible lifecycle ------------------------------------
-    def ensure_opened(self):
-        if not self.is_open:
+    def ensure_opened(self) -> socket.socket:
+        sock = self.sock
+        if sock is None:
             raise serial.SerialException("Bluetooth socket is closed")
+        return sock
 
     def open(self) -> None:
         if self.is_open:
             raise serial.SerialException("Port is already open.")
-        if not self.port:
+        if self.port is None:
             raise serial.SerialException("Port must be configured before it can be used.")
 
         try:
@@ -125,24 +127,25 @@ class BtSerial(contextlib.AbstractContextManager):
         with contextlib.suppress(Exception):
             self.close()
 
+    @override
     def __exit__(self, *_):
         self.close()
 
     # -- pyserial-like I/O ------------------------------------------------
     def write(self, data: bytes) -> int:
-        self.ensure_opened()
-        self.sock.sendall(bytes(data))
+        sock = self.ensure_opened()
+        sock.sendall(bytes(data))
         return len(data)
 
     def read(self, size: int = 1) -> bytes:
-        self.ensure_opened()
+        sock = self.ensure_opened()
         if size <= 0:
             return b""
 
         if self.timeout is None:
             # pyserial semantics: None means blocking until size bytes or EOF.
             while len(self._buf) < size:
-                chunk = self.sock.recv(size - len(self._buf))
+                chunk = sock.recv(size - len(self._buf))
                 if not chunk:
                     raise serial.SerialException("Bluetooth peer closed the link")
                 self._buf.extend(chunk)
@@ -153,7 +156,7 @@ class BtSerial(contextlib.AbstractContextManager):
         if self.timeout == 0:
             # pyserial semantics: return immediately with what is available.
             try:
-                chunk = self.sock.recv(size - len(self._buf), socket.MSG_DONTWAIT)
+                chunk = sock.recv(size - len(self._buf), socket.MSG_DONTWAIT)
                 if chunk:
                     self._buf.extend(chunk)
             except BlockingIOError:
@@ -172,9 +175,9 @@ class BtSerial(contextlib.AbstractContextManager):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            if not select.select([self.sock], [], [], remaining)[0]:
+            if not select.select([sock], [], [], remaining)[0]:
                 break
-            chunk = self.sock.recv(size - len(self._buf))
+            chunk = sock.recv(size - len(self._buf))
             if not chunk:
                 raise serial.SerialException("Bluetooth peer closed the link")
             self._buf.extend(chunk)
@@ -184,12 +187,12 @@ class BtSerial(contextlib.AbstractContextManager):
         return out
 
     def reset_input_buffer(self) -> None:
-        self.ensure_opened()
+        sock = self.ensure_opened()
         self._buf.clear()
         # Zero-timeout poll: recv() after a readable select() returns at once,
         # so the socket timeout is never touched.
-        while select.select([self.sock], [], [], 0)[0]:
-            if not self.sock.recv(4096):
+        while select.select([sock], [], [], 0)[0]:
+            if not sock.recv(4096):
                 break
 
     def reset_output_buffer(self) -> None:

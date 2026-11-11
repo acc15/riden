@@ -1,72 +1,80 @@
-"""Idle keepalive transport and its proxy.
+"""Idle keepalive transport and its session.
 
 One background thread serves every open KeepAlive session in the process.
-A session is an opened proxy: it carries the target, the transaction lock,
-the interval and the current deadline.  User transactions reset the deadline;
-when the deadline expires the thread reads the device ID register to keep the
-link from being closed by the peer's idle timeout.
+A session carries the inner session, the transaction lock, the interval and
+the current deadline.  User transactions reset the deadline; when the deadline
+expires the thread reads the device ID register to keep the link from being
+closed by the peer's idle timeout.
+
+KeepAlive never reconnects.  A link error or a failed ping removes the session
+from the scheduler; a later successful operation (or a logical operation
+error, which proves the link is alive) registers it again.
 """
 
 import logging
 import threading
 import time
-from functools import wraps
+from collections.abc import Callable
+from typing import override
 
-import minimalmodbus
-
-from .errors import is_link_error
-from .proxy import Proxy
-from .transport import Transport
+from .errors import is_link_error as default_is_link_error
+from .transport import Session, Transport, Tx
 
 log = logging.getLogger(__name__)
 
 
-class KeepAliveProxy(Proxy[minimalmodbus.Instrument]):
-    """Proxy that marks activity and serializes target transactions."""
+class KeepAliveSession(Session):
+    """Session that marks activity and serializes inner transactions."""
 
-    interval: float
-    lock: threading.RLock
+    def __init__(self, transport: KeepAlive, inner: Session):
+        self.transport = transport
+        self.inner = inner
+        self.lock = threading.RLock()
 
-    def __init__(self, target: minimalmodbus.Instrument, interval: float):
-        super().__init__(target)
-        object.__setattr__(self, "interval", interval)
-        object.__setattr__(self, "lock", threading.RLock())
+    @override
+    def execute(self, tx: Tx) -> list[int]:
+        with self.lock:
+            try:
+                result = self.inner.execute(tx)
+            except Exception as exc:
+                if self.transport.is_link_error(exc):
+                    # Reconnectable will close and reopen this session just
+                    # after us.  Do it here too, because a stack without
+                    # Reconnectable has nobody else to unschedule it.
+                    _scheduler.unschedule(self)
+                else:
+                    # A logical error proves the link works.
+                    _scheduler.schedule(self)
+                raise
 
-    def _wrap_callable(self, name: str, func):
-        @wraps(func)
-        def wrapped(*args, **kwargs):
-            with self.lock:
-                try:
-                    return func(*args, **kwargs)
-                finally:
-                    _scheduler.touch(self)
+            _scheduler.schedule(self)
+            return result
 
-        return wrapped
+    @override
+    def close(self) -> None:
+        with self.lock:
+            _scheduler.unschedule(self)
+            self.inner.close()
 
 
 class _Scheduler:
     def __init__(self):
         self._cond = threading.Condition()
-        self._deadlines: dict[KeepAliveProxy, float] = {}
+        self._deadlines: dict[KeepAliveSession, float] = {}
         self._thread: threading.Thread | None = None
 
-    def register(self, proxy: KeepAliveProxy) -> None:
+    def schedule(self, session: KeepAliveSession) -> None:
+        """Register the session, or push its next ping forward."""
         with self._cond:
-            self._deadlines[proxy] = time.monotonic() + proxy.interval
+            self._deadlines[session] = (
+                time.monotonic() + session.transport.interval
+            )
             self._ensure_thread_locked()
             self._cond.notify()
 
-    def unregister(self, proxy: KeepAliveProxy) -> None:
+    def unschedule(self, session: KeepAliveSession) -> None:
         with self._cond:
-            self._deadlines.pop(proxy, None)
-            self._cond.notify()
-
-    def touch(self, proxy: KeepAliveProxy) -> None:
-        with self._cond:
-            if proxy not in self._deadlines:
-                return
-
-            self._deadlines[proxy] = time.monotonic() + proxy.interval
+            self._deadlines.pop(session, None)
             self._cond.notify()
 
     def _ensure_thread_locked(self) -> None:
@@ -92,63 +100,61 @@ class _Scheduler:
                     continue
 
                 due = [
-                    proxy for proxy, deadline in self._deadlines.items()
+                    session for session, deadline in self._deadlines.items()
                     if deadline <= now
                 ]
 
-            for proxy in due:
-                self._ping(proxy)
+            for session in due:
+                self._ping(session)
 
-    def _ping(self, proxy: KeepAliveProxy) -> None:
-        with proxy.lock:
+    def _ping(self, session: KeepAliveSession) -> None:
+        with session.lock:
             with self._cond:
-                deadline = self._deadlines.get(proxy)
+                deadline = self._deadlines.get(session)
                 if deadline is None or deadline > time.monotonic():
                     return
             try:
-                proxy.target.read_register(0)
-            except Exception as exc:
+                # Ping the inner session directly: going through execute()
+                # would reschedule from inside the ping.
+                session.inner.execute(Tx.read(0, 1))
+            except Exception:
+                # Any failed ping means the link is not usable: stop pinging
+                # and leave it alone.  Only a real operation can revive it.
                 log.debug("keepalive ping failed", exc_info=True)
-                if is_link_error(exc):
-                    with self._cond:
-                        self._deadlines.pop(proxy, None)
-                    return
+                self.unschedule(session)
+                return
 
-            with self._cond:
-                if proxy in self._deadlines:
-                    self._deadlines[proxy] = time.monotonic() + proxy.interval
+            self.schedule(session)
 
 
 _scheduler = _Scheduler()
 
 
-class KeepAlive(Transport[minimalmodbus.Instrument]):
+class KeepAlive(Transport):
     """Keep the link alive by reading the ID register while it is idle."""
 
-    inner: Transport[minimalmodbus.Instrument]
+    inner: Transport
     interval: float
+    is_link_error: Callable[[BaseException], bool]
 
     def __init__(
         self,
-        inner: Transport[minimalmodbus.Instrument],
+        inner: Transport,
         interval: float = 5.0,
+        is_link_error: Callable[[BaseException], bool] = default_is_link_error,
     ):
         if interval <= 0:
             raise ValueError("interval must be > 0")
         self.inner = inner
         self.interval = interval
+        self.is_link_error = is_link_error
 
-    def open(self) -> minimalmodbus.Instrument:
-        target = self.inner.open()
-        proxy = KeepAliveProxy(target, self.interval)
+    @override
+    def open(self) -> KeepAliveSession:
+        session = KeepAliveSession(self, self.inner.open())
         try:
-            _scheduler.register(proxy)
+            _scheduler.schedule(session)
         except BaseException:
-            self.inner.close(target)
+            session.close()
             raise
-        return proxy
-
-    def close(self, proxy: KeepAliveProxy) -> None:
-        with proxy.lock:
-            _scheduler.unregister(proxy)
-            self.inner.close(proxy.target)
+        return session

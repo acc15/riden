@@ -4,9 +4,9 @@ import time
 
 from config import DEFAULT_URL
 
-from riden import Delayed, KeepAlive, Modbus, Reconnectable, Riden
+from riden import Riden
 
-with Riden(Reconnectable(KeepAlive(Delayed(Modbus(DEFAULT_URL))))) as rd:
+with Riden.connect(DEFAULT_URL) as rd:
     try:
         rd.write(v_set = 0, i_set = 0.1, en = True)
         for v in range(0, 60, 5):

@@ -1,68 +1,63 @@
-"""Reconnectable transport and its proxy."""
+"""Reconnectable transport and its session."""
 
 import contextlib
 import time
 from collections.abc import Callable
-
-import minimalmodbus
+from typing import override
 
 from .errors import is_link_error
-from .proxy import Proxy
-from .transport import Transport
+from .transport import Session, Transport, Tx
 
 
-class ReconnectableProxy(Proxy[minimalmodbus.Instrument]):
-    """Proxy that retries one whole Modbus transaction.
+class ReconnectableSession(Session):
+    """Session that retries one whole Modbus transaction.
 
     One retry is exactly one reconnect attempt followed by one operation
     attempt.  If the reconnect itself fails, that still consumes a retry.
 
-    Per-session state (the current target and the reconnect count) lives
-    here, not in ReconnectableTransport.
+    The retry budget belongs to one transaction, not to the whole session: a
+    long-lived client must be able to reconnect again after the link drops
+    later.  Per-session state (the current inner session) lives here, not in
+    Reconnectable.
     """
 
-    transport: Reconnectable
-    attempts: int
+    def __init__(self, transport: Reconnectable, session: Session):
+        self.transport = transport
+        self.session = session
 
-    def __init__(
-        self,
-        target: minimalmodbus.Instrument,
-        transport: Reconnectable,
-        attempts: int = 0
-    ):
-        super().__init__(target)
-        object.__setattr__(self, "transport", transport)
-        object.__setattr__(self, "attempts", attempts)
+    @override
+    def execute(self, tx: Tx) -> list[int]:
+        attempts = 0
 
-    def can_retry(self):
-        return self.attempts < self.transport.attempts
+        def can_retry() -> bool:
+            return attempts < self.transport.attempts
 
-    def on_retry(self):
-        self.attempts += 1
+        def on_retry() -> None:
+            nonlocal attempts
+            attempts += 1
+            self.reconnect()
+
+        return self.transport.retry(
+            lambda: self.session.execute(tx),
+            can_retry,
+            on_retry,
+        )
+
+    def reconnect(self) -> None:
         with contextlib.suppress(Exception):
-            self.transport.inner.close(self.target)
-        self.target = self.transport.inner.open()
+            self.session.close()
+        self.session = self.transport.inner.open()
 
-    def _wrap_callable(self, name: str, func: Callable) -> Callable:
-        if self.attempts >= self.transport.attempts:
-            return func
-
-        def wrapped(*args, **kwargs):
-            return self.transport.retry(
-                lambda: getattr(self._get_target(), name)(*args, **kwargs),
-                self.can_retry,
-                self.on_retry,
-            )
-
-        return wrapped
+    @override
+    def close(self) -> None:
+        self.session.close()
 
 
-class Reconnectable(Transport[minimalmodbus.Instrument]):
+class Reconnectable(Transport):
     """Wrap another transport and reconnect on retryable transaction errors.
 
-    The transport is an immutable factory: open() and close() do not change
-    it.  Per-session state (current target, reconnect count) belongs to the
-    proxy returned by open().
+    The transport only stores configuration; the state (the current inner
+    session) belongs to the session returned by open().
 
     Each retry performs exactly one reconnect attempt and, if it succeeds,
     one retry of the failed operation.  A failed reconnect consumes a retry.
@@ -70,7 +65,7 @@ class Reconnectable(Transport[minimalmodbus.Instrument]):
 
     def __init__(
         self,
-        inner: Transport[minimalmodbus.Instrument],
+        inner: Transport,
         attempts: int = 1,
         delay: float = 0.2,
         is_retryable: Callable[[BaseException], bool] = is_link_error,
@@ -84,20 +79,26 @@ class Reconnectable(Transport[minimalmodbus.Instrument]):
         self.delay = delay
         self.is_retryable = is_retryable
 
-    def open(self) -> minimalmodbus.Instrument:
+    @override
+    def open(self) -> ReconnectableSession:
         open_attempts = 0
-        
-        def on_retry():
+
+        def can_retry() -> bool:
+            return open_attempts < self.attempts
+
+        def on_retry() -> None:
             nonlocal open_attempts
             open_attempts += 1
 
-        target = self.retry(lambda: self.inner.open(), lambda: open_attempts < self.attempts, on_retry)
-        return ReconnectableProxy(target, self, open_attempts)
+        session = self.retry(self.inner.open, can_retry, on_retry)
+        return ReconnectableSession(self, session)
 
-    def close(self, proxy: minimalmodbus.Instrument):
-        self.inner.close(proxy.target)
-
-    def retry[T](self, fn: Callable[[], T], can_retry: Callable[[], bool], on_retry: Callable) -> T:
+    def retry[T](
+        self,
+        fn: Callable[[], T],
+        can_retry: Callable[[], bool],
+        on_retry: Callable[[], None],
+    ) -> T:
         while True:
             try:
                 return fn()
@@ -111,4 +112,3 @@ class Reconnectable(Transport[minimalmodbus.Instrument]):
             except Exception as exc:
                 if not can_retry() or not self.is_retryable(exc):
                     raise
-

@@ -1,44 +1,39 @@
-"""Transaction pacing transport and its proxy."""
+"""Transaction pacing transport and its session."""
 
 import time
-from collections.abc import Callable
+from typing import override
 
-import minimalmodbus
-
-from .proxy import Proxy
-from .transport import Transport
+from .transport import Session, Transport, Tx
 
 
-class DelayedProxy(Proxy[minimalmodbus.Instrument]):
-    """Proxy that sleeps before each callable attribute access."""
+class DelayedSession(Session):
+    """Session that sleeps before each transaction."""
 
-    transport: Delayed
+    def __init__(self, inner: Session, delay: float):
+        self.inner = inner
+        self.delay = delay
 
-    def __init__(self, target: minimalmodbus.Instrument, transport: Delayed):
-        super().__init__(target)
-        object.__setattr__(self, "transport", transport)
+    @override
+    def execute(self, tx: Tx) -> list[int]:
+        if self.delay > 0:
+            time.sleep(self.delay)
+        return self.inner.execute(tx)
 
-    def _wrap_callable(self, _: str, func: Callable) -> Callable:
-        if self.transport.delay <= 0:
-            return func
-
-        def hooked(*args, **kwargs):
-            time.sleep(self.transport.delay)
-            return func(*args, **kwargs)
-
-        return hooked
+    @override
+    def close(self) -> None:
+        self.inner.close()
 
 
-class Delayed(Transport[minimalmodbus.Instrument]):
-    """Wrap another Modbus transport and pace each transaction.
+class Delayed(Transport):
+    """Wrap another transport and pace each transaction.
 
-    open() returns the inner client, optionally wrapped in DelayedProxy.
-    close(obj) unwraps it and lets the inner transport close its own resource.
+    open() returns a DelayedSession around the inner session; closing it
+    closes the inner session.
     """
 
     def __init__(
         self,
-        inner: Transport[minimalmodbus.Instrument],
+        inner: Transport,
         delay: float = 0.02,
     ):
         if delay < 0:
@@ -46,8 +41,6 @@ class Delayed(Transport[minimalmodbus.Instrument]):
         self.inner = inner
         self.delay = delay
 
-    def open(self) -> minimalmodbus.Instrument:
-        return DelayedProxy(self.inner.open(), self)
-
-    def close(self, obj: minimalmodbus.Instrument) -> None:
-        self.inner.close(obj.target)
+    @override
+    def open(self) -> DelayedSession:
+        return DelayedSession(self.inner.open(), self.delay)

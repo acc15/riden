@@ -5,14 +5,14 @@ import time
 
 from config import DEFAULT_URL
 
-from riden import Delayed, Field, Modbus, Reconnectable, Riden
+from riden import Field, Riden
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("--url", default=DEFAULT_URL)
 args = p.parse_args()
 
 
-with Riden(Reconnectable(Delayed(Modbus(args.url), delay=0.02))) as rd:
+with Riden.connect(args.url, delay=0.02, keepalive=None) as rd:
     try:
         print("=== before ===")
         print(rd.status())

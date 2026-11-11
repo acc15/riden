@@ -18,7 +18,7 @@ Usage:
 import argparse
 import time
 
-from riden import Delayed, Modbus, Reconnectable, Riden
+from riden import Riden
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("port", type=str,
@@ -32,7 +32,7 @@ ok_off = 0
 ok_on = 0
 
 
-with Riden(Reconnectable(Delayed(Modbus(args.port), delay=0.2))) as rd:
+with Riden.connect(args.port, delay=0.2, keepalive=None) as rd:
     try:
         print(rd.identity())
         rd.write(i_set=args.current, v_set=args.voltage, en=False)

@@ -4,7 +4,7 @@ import time
 
 from config import DEFAULT_URL
 
-from riden import Delayed, Field, KeepAlive, Modbus, Reconnectable, Riden
+from riden import Field, Riden
 
 
 def measure_perf(rd, fn):
@@ -19,6 +19,6 @@ def single_long_read(rd: Riden):
 def two_short_reads(rd: Riden):
     print(rd.read(Field.ID), rd.read(Field.V))
 
-with Riden(Reconnectable(KeepAlive(Delayed(Modbus(DEFAULT_URL))))) as rd:
+with Riden.connect(DEFAULT_URL) as rd:
     measure_perf(rd, single_long_read)
     measure_perf(rd, two_short_reads)

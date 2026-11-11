@@ -13,19 +13,18 @@ import time
 
 from config import DEFAULT_URL
 
-from riden import Delayed, Field, Modbus, Reconnectable, Riden
+from riden import Field, Riden
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("count", type=int, nargs="?", default=50)
 p.add_argument("delay", type=float, nargs="?", default=0.3)
 p.add_argument("--url", default=DEFAULT_URL)
 p.add_argument("--address", type=int, default=1)
-p.add_argument("--transaction-delay", type=float, default=0.02)
 args = p.parse_args()
 
 
 ok = 0
-with Riden(Reconnectable(Delayed(Modbus(args.url, address=args.address), delay=args.transaction_delay))) as rd:
+with Riden.connect(args.url, args.address) as rd:
     t0 = time.monotonic()
     for i in range(args.count):
         try:

@@ -1,4 +1,5 @@
 
+import typing
 from functools import partial
 from urllib.parse import parse_qs, urlsplit
 
@@ -20,16 +21,16 @@ def parse_bt_url(url: str):
 
     query = parse_qs(parsed.query)
 
-    def qs(name: str, cast):
+    def qs(name: str, type: type):
         values = query.get(name)
-        if not values:
+        if values is None:
             return None
         try:
-            return cast(values[0])
+            return type(values[0])
         except (TypeError, ValueError) as exc:
             raise ValueError(f"invalid {name} in URL: {values[0]!r}") from exc
 
-    kwargs = {
+    kwargs: dict[str, typing.Any] = {
         "channel": qs("channel", int) or 1,
         "timeout": qs("timeout", float),
         "connect_timeout": qs("connect_timeout", float)
@@ -37,7 +38,7 @@ def parse_bt_url(url: str):
 
     return mac, kwargs
 
-def serial_class_for_url(url):
+def serial_class_for_url(url: str):
     """Return (MAC, partial(BtSerial, channel=..., timeout=...)).
 
     pyserial calls this hook, then constructs the class with port=None, sets

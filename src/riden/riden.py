@@ -1,54 +1,106 @@
 import contextlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
-from typing import Any, Self
-
-import minimalmodbus
+from typing import Any, Self, cast, override
 
 from .field import Field, flatten_fields
 from .model import Model
-from .transport import Transport
+from .transport import Transport, build_transport
+from .transport.errors import is_link_error as default_is_link_error
+from .transport.modbus import Port
+from .transport.transport import Session, Tx
 
 
-class Riden(AbstractContextManager):
+class Riden(AbstractContextManager["Riden"]):
     """Riden power supply client.
 
     The client knows only the device register map.  Its transport argument is
     a Transport: open() creates a Modbus client and close() closes that exact
     session.  Construction does no I/O; open() creates the transport session
     and reads the identity.
-    Intended use:
 
-        with Riden(DelayedTransport(ModbusTransport("bt://..."))) as rd:
+    The common case is a single call:
+
+        with Riden.connect("bt://...", 1) as rd:
+            ...
+
+    A custom stack can be passed explicitly:
+
+        with Riden(Reconnectable(Delayed(Modbus("/dev/ttyUSB0")))) as rd:
             ...
     """
 
-    def __init__(self, transport: Transport[minimalmodbus.Instrument]):
+    def __init__(self, transport: Transport):
         self.transport = transport
-        self.inst: minimalmodbus.Instrument | None = None
-        self.id = None
-        self.sn = None
-        self.fw = None
-        self.model = None
+        self.session: Session | None = None
+        self.id: int | None = None
+        self.sn: int | None = None
+        self.fw: float | None = None
+        self.model: Model | None = None
 
-    def open(self):
-        if self.inst is not None:
+    @classmethod
+    def connect(
+        cls,
+        port: Port,
+        address: int = 1,
+        *,
+        delay: float = 0.02,
+        keepalive: float | None = 5.0,
+        retry_attempts: int = 1,
+        retry_delay: float = 0.2,
+        is_link_error: Callable[[BaseException], bool] = default_is_link_error,
+    ) -> Self:
+        """Return a client using the default transport stack.
+
+        The stack is Modbus -> Delayed -> KeepAlive -> Reconnectable.  Keyword
+        options (``delay``, ``keepalive``, ``retry_attempts``, ``retry_delay``,
+        ``is_link_error``) are documented in
+        :func:`riden.transport.build_transport`; ``keepalive=None`` disables
+        the idle pings.  A failed ping stops the pings for that session; the
+        next operation that proves the link works registers it again.
+
+        Usage::
+
+            with Riden.connect("bt://AA:BB:CC:DD:EE:FF?channel=1", 1) as rd:
+                print(rd.status())
+        """
+        return cls(
+            build_transport(
+                port,
+                address,
+                delay=delay,
+                keepalive=keepalive,
+                retry_attempts=retry_attempts,
+                retry_delay=retry_delay,
+                is_link_error=is_link_error,
+            )
+        )
+
+    def _require_open(self) -> Session:
+        session = self.session
+        if session is None:
+            raise RuntimeError("Riden is not open")
+        return session
+
+    def open(self) -> Self:
+        if self.session is not None:
             return self
 
-        self.inst = self.transport.open()
+        self.session = self.transport.open()
         try:
             # Identification is I/O, so it belongs to open(), not __init__.
-            self.id, self.sn, self.fw = self.read(
-                Field.ID, Field.SN, Field.FW
-            ).values()
+            identity = self.read(Field.ID, Field.SN, Field.FW)
+            self.id = cast(int, identity[Field.ID])
+            self.sn = cast(int, identity[Field.SN])
+            self.fw = cast(float, identity[Field.FW])
             self.model = Model.find(self.id)
         except BaseException:
             # The transport owns the session; close exactly what open() returned.
             # BaseException also covers Ctrl-C, since __exit__ is not called
             # when __enter__ raises.
             with contextlib.suppress(Exception):
-                self.transport.close(self.inst)
-            self.inst = None
+                self.session.close()
+            self.session = None
             raise
         return self
 
@@ -67,19 +119,24 @@ class Riden(AbstractContextManager):
 
         start = min(field.addr for field in selected)
         end = max(field.addr + field.count for field in selected)
-        regs = self.inst.read_registers(start, end - start)
+        session = self._require_open()
+        regs = session.execute(Tx.read(start, end - start))
 
+        # During open() the model is not known yet; the ID/SN/FW readers
+        # ignore it, so the cast is safe there.
+        model = cast(Model, self.model)
         for field in selected:
+            reader = field.read
+            if reader is None:
+                raise ValueError(f"field is not readable: {field.label}")
             offset = field.addr - start
-            raw = regs[offset] if field.count == 1 else regs[offset:offset + field.count]
-            selected[field] = field.read(raw, self.model)
+            raw = regs[offset:offset + field.count]
+            selected[field] = reader(raw, model)
         return selected
 
     def write(self, *values: dict[str | Field, Any], **fields: Any) -> None:
         updates: dict[Field, Any] = {}
         for mapping in values:
-            if not isinstance(mapping, dict):
-                raise TypeError(f"expected dict, got {type(mapping).__name__}")
             for field, value in mapping.items():
                 updates[Field(field)] = value
         for field, value in fields.items():
@@ -90,13 +147,15 @@ class Riden(AbstractContextManager):
 
         # Encode and validate everything before touching the bus, so an invalid
         # value does not leave the device partially updated.
+        session = self._require_open()
+        model = cast(Model, self.model)
         encoded: dict[Field, list[int]] = {}
         for field, value in updates.items():
-            if not field.is_writable:
+            writer = field.write
+            if writer is None:
                 raise ValueError(f"field is not writable: {field.label}")
 
-            raw = field.write(value, self.model)
-            regs = [raw] if isinstance(raw, int) else raw
+            regs = writer(value, model)
             if len(regs) != field.count:
                 raise ValueError(
                     f"field {field.label} produced {len(regs)} registers, "
@@ -121,15 +180,15 @@ class Riden(AbstractContextManager):
             blocks.append((field.addr, list(regs)))
 
         for start, regs in blocks:
-            if len(regs) == 1:
-                self.inst.write_register(start, regs[0])
-            else:
-                self.inst.write_registers(start, regs)
+            session.execute(Tx.write(start, regs))
 
     def _identity(self, v_in: float) -> str:
+        model, sn, fw = self.model, self.sn, self.fw
+        if model is None or sn is None or fw is None:
+            raise RuntimeError("Riden is not initialized")
         return (
-            f"model={self.model} type={self.id} sn={self.sn:08X} fw={self.fw:.2f} "
-            f"input={v_in:.2f}V vscale={self.model.v_scale} iscale={self.model.i_scale}"
+            f"model={model} type={self.id} sn={sn:08X} fw={fw:.2f} "
+            f"input={v_in:.2f}V vscale={model.v_scale} iscale={model.i_scale}"
         )
 
     def identity(self) -> str:
@@ -137,16 +196,18 @@ class Riden(AbstractContextManager):
 
     def close(self) -> None:
         # The client decides when to call this; close exactly the session
-        # returned by link.open().
-        inst = self.inst
-        self.inst = None
-        if inst is not None:
-            self.transport.close(inst)
+        # returned by transport.open().
+        session = self.session
+        self.session = None
+        if session is not None:
+            session.close()
 
+    @override
     def __enter__(self) -> Self:
         self.open()
         return self
 
+    @override
     def __exit__(self, *_):
         self.close()
 

@@ -18,15 +18,15 @@ class Model(Enum):
         self.v_max = v_max
         self.i_max = i_max
 
-    def v_clamp(self, value, offset = 0):
+    def v_clamp(self, value: float, offset: float = 0):
         return round(max(0, min(self.v_max + offset, value)) * self.v_scale)
 
-    def i_clamp(self, value, offset = 0):
+    def i_clamp(self, value: float, offset: float = 0):
         return round(max(0, min(self.i_max + offset, value)) * self.i_scale)
 
     @staticmethod
-    def find(code) -> Model:
+    def find(code: int) -> Model:
         for model in Model:
             if code in model.codes:
                 return model
-        return Model[0]
+        return next(iter(Model))
