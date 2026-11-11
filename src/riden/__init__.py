@@ -3,7 +3,7 @@ import serial
 from .bt import BtSerial
 from .enums import Mode, Protection
 from .field import Field
-from .riden import Riden
+from .riden import Riden, RidenState
 from .transport import Delayed, KeepAlive, Modbus, Reconnectable, Transport
 
 HANDLER_PACKAGE = "riden.bt"
@@ -21,5 +21,6 @@ __all__ = [
     "Protection",
     "Reconnectable",
     "Riden",
-    "Transport"
+    "RidenState",
+    "Transport",
 ]

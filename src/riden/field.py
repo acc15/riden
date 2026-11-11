@@ -7,8 +7,8 @@ from typing import Any, override
 from .enums import Mode, Protection
 from .model import Model
 
-type ValueMap = Callable[[tuple[int, ...], Model], Any] | None
-type RegMap = Callable[[Any, Model], tuple[int, ...]] | None
+type RegRead = Callable[[tuple[int, ...], Model], Any]
+type RegWrite = Callable[[Any, Model], tuple[int, ...]]
 
 def compose(*funcs):
     def composed_fn(arg: Any, *others):
@@ -161,10 +161,10 @@ class Field(Enum):
 
     addr: int
     count: int
-    read: ValueMap
-    write: RegMap
+    read: RegRead | None
+    write: RegWrite | None
 
-    def __new__(cls, addr: int, count: int, read: ValueMap, write: RegMap):
+    def __new__(cls, addr: int, count: int, read: RegRead | None, write: RegWrite | None):
         obj = object.__new__(cls)
         obj._value_ = addr
         obj.addr = addr

@@ -68,7 +68,7 @@ class Reconnectable(Transport):
         inner: Transport,
         attempts: int = 1,
         delay: float = 0.2,
-        is_retryable: Callable[[BaseException], bool] = is_link_error,
+        is_link_error: Callable[[BaseException], bool] = is_link_error,
     ):
         if attempts < 0:
             raise ValueError("retries must be >= 0")
@@ -77,7 +77,7 @@ class Reconnectable(Transport):
         self.inner = inner
         self.attempts = attempts
         self.delay = delay
-        self.is_retryable = is_retryable
+        self.is_retryable = is_link_error
 
     @override
     def open(self) -> ReconnectableSession:

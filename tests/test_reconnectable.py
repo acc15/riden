@@ -56,7 +56,7 @@ class FlakyTransport:
 
 
 def make(inner: FlakyTransport, attempts: int = 1) -> Reconnectable:
-    return Reconnectable(inner, attempts, 0, is_retryable=is_retryable)
+    return Reconnectable(inner, attempts, 0, is_link_error=is_retryable)
 
 
 def test_open_returns_reconnectable_session() -> None:

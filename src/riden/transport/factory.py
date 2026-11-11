@@ -31,16 +31,11 @@ def build_transport(
     and KeepAlive does not treat a logical error (one that is not a link
     error) as a reason to stop pinging.
     """
-    transport: Transport = Delayed(
-        Modbus(port, address), delay
-    )
+    transport: Transport = Modbus(port, address)
+    if delay > 0:
+        transport = Delayed(transport, delay)
     if keepalive is not None:
-        transport = KeepAlive(
-            transport, keepalive, is_link_error=is_link_error
-        )
-    return Reconnectable(
-        transport,
-        retry_attempts,
-        retry_delay,
-        is_retryable=is_link_error,
-    )
+        transport = KeepAlive(transport, keepalive, is_link_error)
+    if retry_attempts > 0:
+        transport = Reconnectable(transport, retry_attempts, retry_delay, is_link_error)
+    return transport

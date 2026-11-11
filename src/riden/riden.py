@@ -1,14 +1,26 @@
 import contextlib
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
-from typing import Any, Self, cast, override
+from dataclasses import dataclass
+from typing import Any, Self, override
 
-from .field import Field, flatten_fields
+from .field import Field, RegRead, RegWrite, flatten_fields
 from .model import Model
 from .transport import Transport, build_transport
 from .transport.errors import is_link_error as default_is_link_error
 from .transport.modbus import Port
 from .transport.transport import Session, Tx
+
+
+@dataclass(frozen=True, slots=True)
+class RidenState:
+    """Identity of the connected device, read once by open()."""
+
+    session: Session
+    id: int
+    sn: int
+    fw: float
+    model: Model
 
 
 class Riden(AbstractContextManager["Riden"]):
@@ -32,11 +44,14 @@ class Riden(AbstractContextManager["Riden"]):
 
     def __init__(self, transport: Transport):
         self.transport = transport
-        self.session: Session | None = None
-        self.id: int | None = None
-        self.sn: int | None = None
-        self.fw: float | None = None
-        self.model: Model | None = None
+        self.state: RidenState | None = None
+
+    @property
+    def info(self) -> RidenState:
+        info = self.state
+        if info is None:
+            raise RuntimeError("Riden is not initialized")
+        return info
 
     @classmethod
     def connect(
@@ -76,65 +91,70 @@ class Riden(AbstractContextManager["Riden"]):
             )
         )
 
-    def _require_open(self) -> Session:
-        session = self.session
-        if session is None:
-            raise RuntimeError("Riden is not open")
-        return session
-
     def open(self) -> Self:
-        if self.session is not None:
+        if self.state is not None:
             return self
 
-        self.session = self.transport.open()
+        session = self.transport.open()
         try:
             # Identification is I/O, so it belongs to open(), not __init__.
-            identity = self.read(Field.ID, Field.SN, Field.FW)
-            self.id = cast(int, identity[Field.ID])
-            self.sn = cast(int, identity[Field.SN])
-            self.fw = cast(float, identity[Field.FW])
-            self.model = Model.find(self.id)
+            values = session.execute(Tx.read(0, 4))
+            self.state = RidenState(
+                session=session,
+                id=values[0],
+                sn=values[1] << 16 | values[2],
+                fw=values[3] / 100.0,
+                model=Model.find(values[0]),
+            )
         except BaseException:
             # The transport owns the session; close exactly what open() returned.
             # BaseException also covers Ctrl-C, since __exit__ is not called
             # when __enter__ raises.
             with contextlib.suppress(Exception):
-                self.session.close()
-            self.session = None
+                session.close()
             raise
         return self
 
     def read(
         self, *fields: str | Field | Sequence[str | Field]
     ) -> dict[Field, Any]:
+
+        info = self.info
+
         # dict.fromkeys() flattens, normalizes and deduplicates in one pass,
         # while preserving the requested order.
         selected: dict[Field, Any] = dict.fromkeys(flatten_fields(fields))
         if not selected:
             return {}
 
-        not_readable = [field.label for field in selected if not field.is_readable]
+        # Validate and collect readers in one pass.  This both reports all
+        # unreadable fields before any I/O and narrows away the optional
+        # `None` in Field.read for the type checker.
+        readers: dict[Field, RegRead] = {}
+        not_readable: list[str] = []
+        for field in selected:
+            if field.read is None:
+                not_readable.append(field.label)
+            else:
+                readers[field] = field.read
+
         if not_readable:
             raise ValueError(f"fields are not readable: {', '.join(not_readable)}")
 
         start = min(field.addr for field in selected)
         end = max(field.addr + field.count for field in selected)
-        session = self._require_open()
-        regs = session.execute(Tx.read(start, end - start))
-
-        # During open() the model is not known yet; the ID/SN/FW readers
-        # ignore it, so the cast is safe there.
-        model = cast(Model, self.model)
-        for field in selected:
-            reader = field.read
-            if reader is None:
-                raise ValueError(f"field is not readable: {field.label}")
+        
+        regs = info.session.execute(Tx.read(start, end - start))
+        for field, reader in readers.items():
             offset = field.addr - start
             raw = regs[offset:offset + field.count]
-            selected[field] = reader(raw, model)
+            selected[field] = reader(raw, info.model)
         return selected
 
     def write(self, *values: dict[str | Field, Any], **fields: Any) -> None:
+        
+        info = self.info
+
         updates: dict[Field, Any] = {}
         for mapping in values:
             for field, value in mapping.items():
@@ -145,68 +165,60 @@ class Riden(AbstractContextManager["Riden"]):
         if not updates:
             return
 
+        # Validate and collect writers in one pass, exactly like read().
+        # All unwritable fields are reported before any encoding or I/O.
+        writers: dict[Field, RegWrite] = {}
+        not_writable: list[str] = []
+        for field in updates:
+            if field.write is None:
+                not_writable.append(field.label)
+            else:
+                writers[field] = field.write
+
+        if not_writable:
+            raise ValueError(f"fields are not writable: {', '.join(not_writable)}")
+
         # Encode and validate everything before touching the bus, so an invalid
         # value does not leave the device partially updated.
-        session = self._require_open()
-        model = cast(Model, self.model)
         encoded: dict[Field, tuple[int, ...]] = {}
         for field, value in updates.items():
-            writer = field.write
-            if writer is None:
-                raise ValueError(f"field is not writable: {field.label}")
-
-            regs = writer(value, model)
+            regs = writers[field](value, info.model)
             if len(regs) != field.count:
-                raise ValueError(
-                    f"field {field.label} produced {len(regs)} registers, "
-                    f"expected {field.count}"
-                )
-            if any(not 0 <= reg <= 0xFFFF for reg in regs):
-                raise ValueError(
-                    f"field {field.label} produced out-of-range registers: {regs}"
-                )
+                raise ValueError(f"field {field.label} produced {len(regs)} registers, expected {field.count}")
+            if any(reg < 0 or reg > 0xFFFF for reg in regs):
+                raise ValueError(f"field {field.label} produced out-of-range registers: {regs}")
             encoded[field] = regs
 
         # Merge fields into contiguous blocks; Modbus cannot write sparse
-        # register lists in one transaction.  Register data is immutable, so
-        # overlaying a field rebuilds the block tuple instead of mutating it.
-        blocks: list[tuple[int, tuple[int, ...]]] = []
+        # register lists in one transaction.  Blocks stay mutable while
+        # merging and are converted to tuples only when sent to the session.
+        blocks: list[tuple[int, list[int]]] = []
         for field, regs in sorted(encoded.items(), key=lambda item: item[0].addr):
             if blocks:
                 block_start, block_regs = blocks[-1]
                 offset = field.addr - block_start
                 if offset <= len(block_regs):
-                    blocks[-1] = (
-                        block_start,
-                        block_regs[:offset]
-                        + regs
-                        + block_regs[offset + len(regs):],
-                    )
+                    block_regs[offset:offset + len(regs)] = regs
                     continue
-            blocks.append((field.addr, regs))
+            blocks.append((field.addr, list(regs)))
 
         for start, regs in blocks:
-            session.execute(Tx.write(start, regs))
+            info.session.execute(Tx.write(start, tuple(regs)))
 
     def _identity(self, v_in: float) -> str:
-        model, sn, fw = self.model, self.sn, self.fw
-        if model is None or sn is None or fw is None:
-            raise RuntimeError("Riden is not initialized")
+        info = self.info
         return (
-            f"model={model} type={self.id} sn={sn:08X} fw={fw:.2f} "
-            f"input={v_in:.2f}V vscale={model.v_scale} iscale={model.i_scale}"
+            f"model={info.model} type={info.id} sn={info.sn:08X} fw={info.fw:.2f} "
+            f"input={v_in:.2f}V vscale={info.model.v_scale} iscale={info.model.i_scale}"
         )
 
     def identity(self) -> str:
         return self._identity(self.read(Field.V_IN)[Field.V_IN])
 
     def close(self) -> None:
-        # The client decides when to call this; close exactly the session
-        # returned by transport.open().
-        session = self.session
-        self.session = None
-        if session is not None:
-            session.close()
+        if self.state is not None:
+            self.state.session.close()
+            self.state = None
 
     @override
     def __enter__(self) -> Self:

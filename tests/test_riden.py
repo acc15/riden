@@ -4,7 +4,7 @@ import pytest
 
 from riden.field import Field
 from riden.model import Model
-from riden.riden import Riden
+from riden.riden import Riden, RidenState
 from riden.transport.transport import Op, Tx
 from tests.conftest import MemorySession, MemoryTransport
 
@@ -23,8 +23,9 @@ def test_open_reads_identity_in_one_transaction(
     transport: MemoryTransport, session: MemorySession
 ) -> None:
     rd = Riden(transport).open()
-    assert (rd.id, rd.sn, rd.fw) == (60065, 7, 12.34)
-    assert rd.model is Model.RD6006P
+    assert rd.info == RidenState(
+        session=session, id=60065, sn=7, fw=12.34, model=Model.RD6006P
+    )
     assert [tx for tx in session.transactions] == [Tx.read(0, 4)]
 
 
@@ -74,7 +75,7 @@ def test_read_rejects_write_only_field(transport: MemoryTransport) -> None:
 
 
 def test_read_before_open_fails(transport: MemoryTransport) -> None:
-    with pytest.raises(RuntimeError, match="not open"):
+    with pytest.raises(RuntimeError, match="not initialized"):
         Riden(transport).read(Field.V)
 
 
@@ -123,8 +124,10 @@ def test_write_ovp_gets_two_volt_margin(
 def test_write_leaves_bus_untouched_on_validation_error(
     transport: MemoryTransport, session: MemorySession
 ) -> None:
-    with Riden(transport) as rd, pytest.raises(ValueError, match="not writable"):
-        rd.write({Field.V_SET: 12.5, Field.V: 1.0})
+    with Riden(transport) as rd, pytest.raises(
+        ValueError, match="fields are not writable: v, i"
+    ):
+        rd.write({Field.V_SET: 12.5, Field.V: 1.0, Field.I: 1.0})
     assert [tx for tx in session.transactions if tx.op is Op.WRITE] == []
 
 
@@ -145,7 +148,7 @@ def test_write_nothing_does_no_io(
 
 
 def test_write_before_open_fails(transport: MemoryTransport) -> None:
-    with pytest.raises(RuntimeError, match="not open"):
+    with pytest.raises(RuntimeError, match="not initialized"):
         Riden(transport).write({Field.V_SET: 12.5})
 
 
@@ -155,7 +158,9 @@ def test_close_closes_session_and_is_idempotent(
     rd = Riden(transport).open()
     rd.close()
     rd.close()
-    assert rd.session is None
+    assert rd.state is None
+    with pytest.raises(RuntimeError, match="not initialized"):
+        _ = rd.info
     assert session.closed
 
 
@@ -166,7 +171,9 @@ def test_open_failure_closes_session(
     rd = Riden(transport)
     with pytest.raises(RuntimeError, match="boom"):
         rd.open()
-    assert rd.session is None
+    assert rd.state is None
+    with pytest.raises(RuntimeError, match="not initialized"):
+        _ = rd.info
     assert session.closed
 
 
@@ -174,8 +181,8 @@ def test_context_manager_closes_session(
     transport: MemoryTransport, session: MemorySession
 ) -> None:
     with Riden(transport) as rd:
-        assert rd.session is not None
-    assert rd.session is None
+        assert rd.state is not None
+    assert rd.state is None
     assert session.closed
 
 
