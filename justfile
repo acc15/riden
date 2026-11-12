@@ -1,5 +1,4 @@
 set dotenv-load
-set positional-arguments
 
 pypi_url := "https://upload.pypi.org/legacy/"
 test_pypi_url := "https://test.pypi.org/legacy/"
@@ -30,39 +29,32 @@ check: lint test
 build: check
     uv build --clear
 
-# Поднять версию, прогнать тесты, собрать, закоммитить и поставить тэг
-bump *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    part=patch
-    case "${1:-}" in
-        major|minor|patch) part="$1"; shift ;;
-    esac
-    uv run bump-my-version bump "$part" "$@"
+# Поднять patch-версию: тесты, lock, сборка, коммит, тэг
+bump *args: (_bump "patch" args)
 
-# Опубликовать на PyPI: bump версии, сборка и загрузка
-publish *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    part=patch
-    case "${1:-}" in
-        major|minor|patch) part="$1"; shift ;;
-    esac
-    dry_run=0
-    for arg in "$@"; do
-        if [ "$arg" = "--dry-run" ]; then dry_run=1; fi
-    done
-    if [ "$dry_run" -eq 0 ]; then
-        uv run bump-my-version bump "$part"
-    else
-        echo "dry run: version bump and tag skipped"
-        just build
-    fi
-    UV_PUBLISH_TOKEN="${PYPI_TOKEN:-}" uv publish --publish-url {{ pypi_url }} "$@"
+# Поднять minor-версию
+bump-minor *args: (_bump "minor" args)
+
+# Поднять major-версию
+bump-major *args: (_bump "major" args)
+
+# Опубликовать patch-релиз на PyPI
+publish *args: (_bump "patch" args) build (_upload args)
+
+# Опубликовать minor-релиз на PyPI
+publish-minor *args: (_bump "minor" args) build (_upload args)
+
+# Опубликовать major-релиз на PyPI
+publish-major *args: (_bump "major" args) build (_upload args)
 
 # Опубликовать текущую версию на TestPyPI (без bump и тэга)
-publish-test *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    just build
-    UV_PUBLISH_TOKEN="${TEST_PYPI_TOKEN:-}" uv publish --publish-url {{ test_pypi_url }} "$@"
+publish-test *args: build
+    UV_PUBLISH_TOKEN="${TEST_PYPI_TOKEN:-}" uv publish --publish-url {{ test_pypi_url }} {{ args }}
+
+[private]
+_bump part *args:
+    uv run bump-my-version bump {{ part }} {{ args }}
+
+[private]
+_upload *args:
+    UV_PUBLISH_TOKEN="${PYPI_TOKEN:-}" uv publish --publish-url {{ pypi_url }} {{ args }}

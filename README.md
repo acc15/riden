@@ -137,9 +137,10 @@ artifacts, commits and creates an annotated `v<version>` tag:
 
 ```sh
 just publish            # patch release: bump, build, upload to PyPI
-just publish minor      # minor (or major) release
+just publish-minor      # minor release (publish-major for major)
 just publish --dry-run  # no bump and no tag, only verify the upload
-just bump               # bump, commit and tag without uploading
+just bump               # bump patch, commit and tag without uploading
+just bump-minor         # same for minor (bump-major for major)
 git push --follow-tags  # bump-my-version does not push
 ```
 
