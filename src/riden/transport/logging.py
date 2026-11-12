@@ -6,8 +6,6 @@ transaction ID, so they can be correlated even when several sessions share a
 logger.  Writes have no response and therefore log only the request.
 """
 
-from __future__ import annotations
-
 import itertools
 import logging
 from typing import override

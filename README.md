@@ -19,7 +19,7 @@ Linux.
 
 ## Requirements
 
-- Python 3.12 or newer;
+- Python 3.14 or newer;
 - Linux with BlueZ for Bluetooth SPP;
 - any OS supported by pyserial for USB serial.
 

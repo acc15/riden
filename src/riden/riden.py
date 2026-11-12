@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import contextlib
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager

@@ -1,7 +1,5 @@
 """Reconnectable transport and its session."""
 
-from __future__ import annotations
-
 import contextlib
 import time
 from collections.abc import Callable

@@ -1,7 +1,5 @@
 """Tests for the reconnecting transport and its retry budget."""
 
-from __future__ import annotations
-
 import pytest
 
 from riden.transport.reconnectable import Reconnectable, ReconnectableSession
