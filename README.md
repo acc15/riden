@@ -136,13 +136,16 @@ It bumps the version, runs `just check`, updates `uv.lock`, builds the
 artifacts, commits and creates an annotated `v<version>` tag:
 
 ```sh
-just publish            # patch release: bump, build, upload to PyPI
-just publish-minor      # minor release (publish-major for major)
-just publish --dry-run  # no bump and no tag, only verify the upload
-just bump               # bump patch, commit and tag without uploading
-just bump-minor         # same for minor (bump-major for major)
-git push --follow-tags  # bump-my-version does not push
+just publish                  # patch release: bump, build, upload to PyPI
+just publish minor            # minor release (or major)
+just publish patch --dry-run  # no bump and no tag, only verify the upload
+just bump                     # bump patch, commit and tag without uploading
+just bump minor               # bump minor (or major)
+git push --follow-tags        # bump-my-version does not push
 ```
+
+The version part defaults to `patch`, so `just bump` and `just publish` are
+patch releases.
 
 Publishing tokens are read from `.env` (see `.env.example`). The working tree
 must be clean: `bump-my-version` refuses to bump otherwise.
