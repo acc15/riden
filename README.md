@@ -129,6 +129,27 @@ uv build          # sdist + wheel in dist/
 just check        # ty + ruff + pytest
 ```
 
+### Releasing
+
+Releases are prepared with `bump-my-version` (configured in `pyproject.toml`).
+It bumps the version, runs `just check`, updates `uv.lock`, builds the
+artifacts, commits and creates an annotated `v<version>` tag:
+
+```sh
+just publish            # patch release: bump, build, upload to PyPI
+just publish minor      # minor (or major) release
+just publish --dry-run  # no bump and no tag, only verify the upload
+just bump               # bump, commit and tag without uploading
+git push --follow-tags  # bump-my-version does not push
+```
+
+Publishing tokens are read from `.env` (see `.env.example`). The working tree
+must be clean: `bump-my-version` refuses to bump otherwise.
+
+`just publish-test` uploads the current version to TestPyPI without bumping or
+tagging. TestPyPI never accepts the same filename twice, even after the
+release is deleted, so a repeated test needs a new version.
+
 Scripts in `scripts/` are run through `uv run`:
 
 ```sh
