@@ -29,14 +29,14 @@ check: lint test
 build: check
     uv build --clear
 
-# Поднять версию (patch по умолчанию): just bump, just bump minor --dry-run
-bump part="patch" *args:
-    uv run bump-my-version bump {{ part }} {{ args }}
+# Поднять версию: just bump patch, just bump minor --dry-run
+bump *args:
+    uv run bump-my-version bump {{ args }}
 
-# Опубликовать на PyPI (patch по умолчанию): just publish, just publish minor --dry-run
-publish part="patch" *args: (bump part args) build
+# Опубликовать на PyPI: just publish, just publish --dry-run
+publish *args:
     UV_PUBLISH_TOKEN="${PYPI_TOKEN:-}" uv publish --publish-url {{ pypi_url }} {{ args }}
 
-# Опубликовать текущую версию на TestPyPI (без bump и тэга)
-publish-test *args: build
+# Опубликовать на TestPyPI: just publish-test, just publish-test --dry-run
+publish-test *args:
     UV_PUBLISH_TOKEN="${TEST_PYPI_TOKEN:-}" uv publish --publish-url {{ test_pypi_url }} {{ args }}

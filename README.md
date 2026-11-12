@@ -136,21 +136,22 @@ It bumps the version, runs `just check`, updates `uv.lock`, builds the
 artifacts, commits and creates an annotated `v<version>` tag:
 
 ```sh
-just publish                  # patch release: bump, build, upload to PyPI
-just publish minor            # minor release (or major)
-just publish patch --dry-run  # no bump and no tag, only verify the upload
-just bump                     # bump patch, commit and tag without uploading
-just bump minor               # bump minor (or major)
-git push --follow-tags        # bump-my-version does not push
+just bump patch           # bump, build, commit and tag
+just bump minor           # minor (or major)
+just bump minor --dry-run # verify without changing anything
+just publish              # upload dist/ to PyPI
+just publish --dry-run    # verify the upload without sending
+git push --follow-tags    # bump-my-version does not push
 ```
 
-The version part defaults to `patch`, so `just bump` and `just publish` are
-patch releases.
+The version part is required by `bump-my-version`: `just bump` without
+`patch`/`minor`/`major` fails. `just publish` uploads the existing `dist/`
+artifacts; `just bump` already builds them, or run `just build` explicitly.
 
 Publishing tokens are read from `.env` (see `.env.example`). The working tree
 must be clean: `bump-my-version` refuses to bump otherwise.
 
-`just publish-test` uploads the current version to TestPyPI without bumping or
+`just publish-test` uploads the current `dist/` to TestPyPI without bumping or
 tagging. TestPyPI never accepts the same filename twice, even after the
 release is deleted, so a repeated test needs a new version.
 
