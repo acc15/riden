@@ -48,6 +48,14 @@ class Modbus(Transport, Session):
         self.instrument: minimalmodbus.Instrument | None = None
 
     @override
+    def __str__(self) -> str:
+        port = self.port
+        name = port.port if port.port is not None else "?"
+        if isinstance(port, BtSerial):
+            return f"{name}/{port.channel}@{self.address}"
+        return f"{name}@{self.address}"
+
+    @override
     def open(self) -> Self:
         if self.owns_port and not self.port.is_open:
             self.port.open()

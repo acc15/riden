@@ -5,6 +5,8 @@ Instrument.  Both are replaced here by small in-memory objects, so the tests
 never touch a device or a socket.
 """
 
+from __future__ import annotations
+
 from collections.abc import Iterator
 from typing import Any, ClassVar, cast
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import contextlib
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
@@ -10,17 +12,6 @@ from .transport import Transport, build_transport
 from .transport.errors import is_link_error as default_is_link_error
 from .transport.modbus import Port
 from .transport.transport import Session, Tx
-
-
-@dataclass(frozen=True, slots=True)
-class RidenState:
-    """Identity of the connected device, read once by open()."""
-
-    session: Session
-    id: int
-    sn: int
-    fw: float
-    model: Model
 
 
 class Riden(AbstractContextManager["Riden"]):
@@ -42,16 +33,25 @@ class Riden(AbstractContextManager["Riden"]):
             ...
     """
 
+    @dataclass(frozen=True, slots=True)
+    class State:
+        """Identity of the connected device, read once by open()."""
+
+        session: Session
+        id: int
+        sn: int
+        fw: float
+        model: Model
+
     def __init__(self, transport: Transport):
         self.transport = transport
-        self.state: RidenState | None = None
+        self.state: Riden.State | None = None
 
-    @property
-    def info(self) -> RidenState:
-        info = self.state
-        if info is None:
+    def require_state(self) -> Riden.State:
+        state = self.state
+        if state is None:
             raise RuntimeError("Riden is not initialized")
-        return info
+        return state
 
     @classmethod
     def connect(
@@ -99,7 +99,7 @@ class Riden(AbstractContextManager["Riden"]):
         try:
             # Identification is I/O, so it belongs to open(), not __init__.
             values = session.execute(Tx.read(0, 4))
-            self.state = RidenState(
+            self.state = Riden.State(
                 session=session,
                 id=values[0],
                 sn=values[1] << 16 | values[2],
@@ -119,7 +119,7 @@ class Riden(AbstractContextManager["Riden"]):
         self, *fields: str | Field | Sequence[str | Field]
     ) -> dict[Field, Any]:
 
-        info = self.info
+        state = self.require_state()
 
         # dict.fromkeys() flattens, normalizes and deduplicates in one pass,
         # while preserving the requested order.
@@ -144,16 +144,16 @@ class Riden(AbstractContextManager["Riden"]):
         start = min(field.addr for field in selected)
         end = max(field.addr + field.count for field in selected)
         
-        regs = info.session.execute(Tx.read(start, end - start))
+        regs = state.session.execute(Tx.read(start, end - start))
         for field, reader in readers.items():
             offset = field.addr - start
             raw = regs[offset:offset + field.count]
-            selected[field] = reader(raw, info.model)
+            selected[field] = reader(raw, state.model)
         return selected
 
     def write(self, *values: dict[str | Field, Any], **fields: Any) -> None:
         
-        info = self.info
+        state = self.require_state()
 
         updates: dict[Field, Any] = {}
         for mapping in values:
@@ -182,7 +182,7 @@ class Riden(AbstractContextManager["Riden"]):
         # value does not leave the device partially updated.
         encoded: dict[Field, tuple[int, ...]] = {}
         for field, value in updates.items():
-            regs = writers[field](value, info.model)
+            regs = writers[field](value, state.model)
             if len(regs) != field.count:
                 raise ValueError(f"field {field.label} produced {len(regs)} registers, expected {field.count}")
             if any(reg < 0 or reg > 0xFFFF for reg in regs):
@@ -203,13 +203,13 @@ class Riden(AbstractContextManager["Riden"]):
             blocks.append((field.addr, list(regs)))
 
         for start, regs in blocks:
-            info.session.execute(Tx.write(start, tuple(regs)))
+            state.session.execute(Tx.write(start, tuple(regs)))
 
     def _identity(self, v_in: float) -> str:
-        info = self.info
+        state = self.require_state()
         return (
-            f"model={info.model} type={info.id} sn={info.sn:08X} fw={info.fw:.2f} "
-            f"input={v_in:.2f}V vscale={info.model.v_scale} iscale={info.model.i_scale}"
+            f"model={state.model} type={state.id} sn={state.sn:08X} fw={state.fw:.2f} "
+            f"input={v_in:.2f}V vscale={state.model.v_scale} iscale={state.model.i_scale}"
         )
 
     def identity(self) -> str:

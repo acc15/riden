@@ -3,12 +3,12 @@
 import argparse
 import time
 
-from config import DEFAULT_URL
+import config
 
 from riden import Field, Riden
 
 p = argparse.ArgumentParser(description=__doc__)
-p.add_argument("--url", default=DEFAULT_URL)
+p.add_argument("--url", default=config.DEFAULT_URL)
 args = p.parse_args()
 
 

@@ -11,6 +11,8 @@ from the scheduler; a later successful operation (or a logical operation
 error, which proves the link is alive) registers it again.
 """
 
+from __future__ import annotations
+
 import logging
 import threading
 import time

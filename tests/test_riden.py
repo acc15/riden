@@ -4,7 +4,7 @@ import pytest
 
 from riden.field import Field
 from riden.model import Model
-from riden.riden import Riden, RidenState
+from riden.riden import Riden
 from riden.transport.transport import Op, Tx
 from tests.conftest import MemorySession, MemoryTransport
 
@@ -23,7 +23,7 @@ def test_open_reads_identity_in_one_transaction(
     transport: MemoryTransport, session: MemorySession
 ) -> None:
     rd = Riden(transport).open()
-    assert rd.info == RidenState(
+    assert rd.require_state() == Riden.State(
         session=session, id=60065, sn=7, fw=12.34, model=Model.RD6006P
     )
     assert [tx for tx in session.transactions] == [Tx.read(0, 4)]
@@ -160,7 +160,7 @@ def test_close_closes_session_and_is_idempotent(
     rd.close()
     assert rd.state is None
     with pytest.raises(RuntimeError, match="not initialized"):
-        _ = rd.info
+        _ = rd.require_state()
     assert session.closed
 
 
@@ -173,7 +173,7 @@ def test_open_failure_closes_session(
         rd.open()
     assert rd.state is None
     with pytest.raises(RuntimeError, match="not initialized"):
-        _ = rd.info
+        _ = rd.require_state()
     assert session.closed
 
 
