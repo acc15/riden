@@ -140,4 +140,4 @@ uv run scripts/link_test.py "bt://E2:F9:C6:24:71:C8?channel=1&timeout=0.5"
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](https://github.com/acc15/riden/blob/master/LICENSE).
