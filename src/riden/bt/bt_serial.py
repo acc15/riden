@@ -20,12 +20,32 @@ import re
 import select
 import socket
 import time
+from enum import IntEnum
 from typing import override
 
 import serial
 
 # Fixed for minimalmodbus; RFCOMM has no real baudrate.
 BAUDRATE = 115200
+
+# Python's socket module does not export these.
+SOL_BLUETOOTH = 274
+BT_SECURITY = 4
+
+
+class SecurityLevel(IntEnum):
+    """RFCOMM security levels (BT_SECURITY_* from <bluetooth/bluetooth.h>).
+
+    MEDIUM (authenticated + encrypted) is the default: some SPP modules (seen
+    on Riden RK6012) drop an idle unencrypted link after ~10 s with a
+    supervision timeout, while an encrypted one stays up.
+    """
+
+    SDP = 0
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    FIPS = 4
 
 _MAC_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 
@@ -42,7 +62,8 @@ class BtSerial(contextlib.AbstractContextManager["BtSerial"]):
         port: str | None = None, 
         channel: int = 1,
         timeout: float | None = 0.5,
-        connect_timeout: float | None = 10
+        connect_timeout: float | None = 10,
+        security: SecurityLevel = SecurityLevel.MEDIUM,
     ):
         self.port = port
         self.channel = channel
@@ -50,6 +71,7 @@ class BtSerial(contextlib.AbstractContextManager["BtSerial"]):
         self._buf = bytearray()
         self.timeout = timeout
         self.connect_timeout = connect_timeout
+        self.security = security
         if port is not None:
             self.open()
 
@@ -105,6 +127,7 @@ class BtSerial(contextlib.AbstractContextManager["BtSerial"]):
             socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM
         )
         try:
+            sock.setsockopt(SOL_BLUETOOTH, BT_SECURITY, bytes((self.security, 0)))
             sock.settimeout(self.connect_timeout)
             sock.connect((mac, channel))
             sock.settimeout(self.timeout)

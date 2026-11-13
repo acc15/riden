@@ -142,6 +142,12 @@ def test_flatten_fields_preserves_order_and_flattens() -> None:
     assert list(fields) == [Field.V, Field.V_SET, Field.I, Field.V]
 
 
+def test_flatten_fields_accepts_any_iterable() -> None:
+    nested = (f for f in ["v_set", Field.I])
+    fields = flatten_fields((Field.V, nested, {"sn"}, ("en",)))
+    assert list(fields) == [Field.V, Field.V_SET, Field.I, Field.SN, Field.EN]
+
+
 def test_flatten_fields_rejects_other_types() -> None:
     with pytest.raises(TypeError):
         list(flatten_fields([cast(Any, 1)]))

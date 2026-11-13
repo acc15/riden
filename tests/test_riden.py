@@ -55,6 +55,37 @@ def test_read_accepts_names_and_sequences(transport: MemoryTransport) -> None:
     assert values == {Field.V_SET: 12.5, Field.SN: 7, Field.EN: True}
 
 
+def test_read_accepts_generator_expression(
+    transport: MemoryTransport, session: MemorySession
+) -> None:
+    with Riden(transport) as rd:
+        values = rd.read(f for f in (Field.V, Field.I))
+    assert values == {Field.V: 12.0, Field.I: 0.5}
+    assert session.transactions[-1] == Tx.read(10, 2)
+
+
+def test_read_accepts_mixed_iterables(transport: MemoryTransport) -> None:
+    with Riden(transport) as rd:
+        values = rd.read(
+            "v_set", (name for name in ["sn"]), iter([Field.EN]), ("v_set",)
+        )
+    assert values == {Field.V_SET: 12.5, Field.SN: 7, Field.EN: True}
+
+
+def test_read_empty_generator_does_no_io(
+    transport: MemoryTransport, session: MemorySession
+) -> None:
+    with Riden(transport) as rd:
+        assert rd.read(f for f in Field if False) == {}
+    assert session.transactions == [Tx.read(0, 4)]
+
+
+def test_read_all_readable_fields_via_generator(transport: MemoryTransport) -> None:
+    with Riden(transport) as rd:
+        values = rd.read(f for f in Field if f.is_readable)
+    assert list(values) == [f for f in Field if f.is_readable]
+
+
 def test_read_deduplicates_fields(transport: MemoryTransport) -> None:
     with Riden(transport) as rd:
         values = rd.read(Field.V, "v", Field.V)

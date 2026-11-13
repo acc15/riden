@@ -1,9 +1,18 @@
 
 import typing
+from collections.abc import Callable
 from functools import partial
 from urllib.parse import parse_qs, urlsplit
 
-from .bt_serial import BtSerial
+from .bt_serial import BtSerial, SecurityLevel
+
+# URL parameter name -> converter from its string value.
+_URL_PARAMS: dict[str, Callable[[str], typing.Any]] = {
+    "channel": int,
+    "timeout": float,
+    "connect_timeout": float,
+    "security": lambda value: SecurityLevel[value.upper()],
+}
 
 
 def parse_bt_url(url: str):
@@ -19,27 +28,21 @@ def parse_bt_url(url: str):
             "channel must be a query parameter, e.g. bt://MAC?channel=1"
         )
 
-    query = parse_qs(parsed.query)
-
-    def qs(name: str, type: type):
-        values = query.get(name)
-        if values is None:
-            return None
+    # Only parameters present in the URL are returned, so every default stays
+    # in one place: BtSerial.__init__.  KeyError covers both an unknown
+    # parameter and an unknown SecurityLevel name.
+    kwargs: dict[str, typing.Any] = {}
+    for name, values in parse_qs(parsed.query).items():
         try:
-            return type(values[0])
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"invalid {name} in URL: {values[0]!r}") from exc
-
-    kwargs: dict[str, typing.Any] = {
-        "channel": qs("channel", int) or 1,
-        "timeout": qs("timeout", float),
-        "connect_timeout": qs("connect_timeout", float)
-    }
+            kwargs[name] = _URL_PARAMS[name](values[0])
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ValueError(f"invalid bt URL parameter: {name}={values[0]!r}") from exc
 
     return mac, kwargs
 
+
 def serial_class_for_url(url: str):
-    """Return (MAC, partial(BtSerial, channel=..., timeout=...)).
+    """Return (MAC, partial(BtSerial, **params present in the URL)).
 
     pyserial calls this hook, then constructs the class with port=None, sets
     instance.port to the returned MAC, and calls open() unless do_not_open.

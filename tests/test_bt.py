@@ -1,12 +1,13 @@
 """Tests for the Bluetooth serial shim and its URL handler."""
 
 import socket
-from typing import cast
+from typing import Any, cast
 
 import pytest
 import serial
 
-from riden.bt.bt_serial import BtSerial, parse_mac
+from riden.bt import bt_serial
+from riden.bt.bt_serial import BtSerial, SecurityLevel, parse_mac
 from riden.bt.protocol_bt import parse_bt_url
 
 
@@ -60,18 +61,42 @@ def test_parse_mac_rejects_garbage() -> None:
         parse_mac("not-a-mac")
 
 
-def test_parse_bt_url_defaults() -> None:
+def test_parse_bt_url_returns_only_present_params() -> None:
     mac, kwargs = parse_bt_url("bt://AA:BB:CC:DD:EE:FF")
     assert mac == "AA:BB:CC:DD:EE:FF"
-    assert kwargs == {"channel": 1, "timeout": None, "connect_timeout": None}
+    assert kwargs == {}
+
+    _, kwargs = parse_bt_url("bt://AA:BB:CC:DD:EE:FF?timeout=2")
+    assert kwargs == {"timeout": 2.0}
+
+
+def test_serial_for_url_keeps_bt_serial_defaults() -> None:
+    import riden  # noqa: F401  (registers the bt:// handler)
+
+    port = cast(
+        BtSerial, serial.serial_for_url("bt://AA:BB:CC:DD:EE:FF", do_not_open=True)
+    )
+    default = BtSerial()
+    assert port.channel == default.channel
+    assert port.timeout == default.timeout
+    assert port.connect_timeout == default.connect_timeout
+    assert port.security == default.security == SecurityLevel.MEDIUM
 
 
 def test_parse_bt_url_options() -> None:
     mac, kwargs = parse_bt_url(
-        "bt://aa:bb:cc:dd:ee:ff/?channel=2&timeout=1.5&connect_timeout=3"
+        "bt://aa:bb:cc:dd:ee:ff/?channel=2&timeout=1.5&connect_timeout=3&security=LOW"
     )
     assert mac == "aa:bb:cc:dd:ee:ff"
-    assert kwargs == {"channel": 2, "timeout": 1.5, "connect_timeout": 3.0}
+    assert kwargs == {
+        "channel": 2, "timeout": 1.5, "connect_timeout": 3.0,
+        "security": SecurityLevel.LOW,
+    }
+
+
+def test_parse_bt_url_keeps_zero_security_level() -> None:
+    _, kwargs = parse_bt_url("bt://AA:BB:CC:DD:EE:FF?security=sdp")
+    assert kwargs["security"] is SecurityLevel.SDP
 
 
 @pytest.mark.parametrize(
@@ -82,6 +107,8 @@ def test_parse_bt_url_options() -> None:
         "bt://AA:BB:CC:DD:EE:FF/extra",
         "bt://AA:BB:CC:DD:EE:FF?channel=abc",
         "bt://AA:BB:CC:DD:EE:FF?timeout=abc",
+        "bt://AA:BB:CC:DD:EE:FF?security=bogus",
+        "bt://AA:BB:CC:DD:EE:FF?timout=1",
     ],
 )
 def test_parse_bt_url_rejects_invalid(url: str) -> None:
@@ -103,6 +130,45 @@ def test_serial_for_url_returns_configured_bt_serial() -> None:
     assert port.channel == 3
     assert port.timeout == 0.5
     assert not port.is_open
+
+
+class RecordingSocket:
+    """socket.socket stand-in that records the calls made by BtSerial.open()."""
+
+    def __init__(self, *_: Any) -> None:
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        RecordingSocket.last = self
+
+    def setsockopt(self, *args: Any) -> None:
+        self.calls.append(("setsockopt", args))
+
+    def settimeout(self, *args: Any) -> None:
+        self.calls.append(("settimeout", args))
+
+    def connect(self, *args: Any) -> None:
+        self.calls.append(("connect", args))
+
+    def close(self) -> None:
+        pass
+
+    last: RecordingSocket
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "level"),
+    [({}, SecurityLevel.MEDIUM), ({"security": SecurityLevel.LOW}, SecurityLevel.LOW)],
+)
+def test_open_sets_security_before_connect(
+    monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, Any], level: SecurityLevel
+) -> None:
+    monkeypatch.setattr(bt_serial.socket, "socket", RecordingSocket)
+    BtSerial("AA:BB:CC:DD:EE:FF", **kwargs)
+    calls = RecordingSocket.last.calls
+    names = [name for name, _ in calls]
+    assert calls[names.index("setsockopt")][1] == (
+        bt_serial.SOL_BLUETOOTH, bt_serial.BT_SECURITY, bytes((level, 0))
+    )
+    assert names.index("setsockopt") < names.index("connect")
 
 
 def test_closed_serial_raises() -> None:

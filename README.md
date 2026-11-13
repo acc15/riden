@@ -14,8 +14,9 @@ Linux.
 - batched I/O: fields are read and written in one Modbus transaction per
   contiguous register block, not one transaction per field;
 - automatic model and voltage/current scale detection on connect;
-- ready-made transport stack: transaction pacing, keepalive, reconnect, and
-  logging.
+- ready-made transport stack: transaction pacing, reconnect, logging, and
+  optional keepalive pings;
+- encrypted Bluetooth link by default, which keeps idle connections alive.
 
 ## Requirements
 
@@ -89,16 +90,75 @@ with Riden.connect("bt://E2:F9:C6:24:71:C8?channel=1&timeout=0.5") as rd:
 
 ## Bluetooth on Linux
 
-Pair and trust the device first (`bluetoothctl pair/trust`); the RFCOMM
-channel is usually `1`. URL format:
+Pair the device once before the first connection (the PIN is usually `1234`):
+
+```sh
+bluetoothctl pair AA:BB:CC:DD:EE:FF
+```
+
+`bluetoothctl trust` is not required: it only affects connections managed by
+`bluetoothd` (auto-reconnect, incoming connections), not the RFCOMM socket
+this library opens.
+
+URL format:
 
 ```text
 bt://AA:BB:CC:DD:EE:FF?channel=1&timeout=0.5
 ```
 
-`timeout` and `connect_timeout` are specified in seconds as query parameters.
+| Parameter         | Default  | Meaning                                       |
+|-------------------|----------|-----------------------------------------------|
+| `channel`         | `1`      | RFCOMM channel, `1`..`30`                     |
+| `timeout`         | `0.5`    | read/write timeout, seconds                   |
+| `connect_timeout` | `10`     | connection timeout, seconds                   |
+| `security`        | `medium` | `low`, `medium`, `high`, `fips` (see below)   |
+
+Only the parameters present in the URL are passed on; the defaults live in
+`BtSerial`. An unknown parameter or an invalid value raises `ValueError`.
 `BtSerial` is registered as a pyserial URL handler, so `bt://` works anywhere a
 regular serial port is accepted.
+
+### Security level
+
+`security` sets the RFCOMM socket security level (`BT_SECURITY` in BlueZ),
+which the kernel enforces before the connection is used:
+
+| Level    | Requirement                                                     |
+|----------|-----------------------------------------------------------------|
+| `low`    | no authentication, no encryption                                |
+| `medium` | authenticated and encrypted link; any stored link key will do   |
+| `high`   | as `medium`, but the link key must be MITM-protected            |
+| `fips`   | Secure Connections only                                         |
+
+The default is `medium`. A plain Linux RFCOMM socket uses `low`, and with it
+the Bluetooth module of the Riden supply (tested on RK6012) drops the link
+after about 8–10 s without traffic: the next request fails with
+`TimeoutError: [Errno 110] Connection timed out`. In an HCI capture
+(`btmon`) this is `Disconnect Complete` with reason `Connection Timeout
+(0x08)`: the PSU stops answering at the radio level, while the host never
+asks to disconnect. With an encrypted link the same device stays connected
+while idle (verified for 60 s). The behaviour did not depend on the USB
+dongle (reproduced on Realtek and Broadcom controllers). Android apps are not
+affected because Android opens secure RFCOMM sockets by default.
+
+`medium` needs a paired device: the kernel authenticates with the stored link
+key, without any prompt. `high` usually fails with Riden supplies, because a
+key from legacy pairing with a 4-digit PIN is not considered MITM-protected.
+Use `security=low` only for a device that cannot be paired, and enable
+keepalive pings in that case:
+
+```python
+with Riden.connect("bt://AA:BB:CC:DD:EE:FF?security=low", keepalive=5.0) as rd:
+    ...
+```
+
+When constructing `BtSerial` directly, pass the enum:
+
+```python
+from riden.bt import BtSerial, SecurityLevel
+
+port = BtSerial("AA:BB:CC:DD:EE:FF", security=SecurityLevel.LOW)
+```
 
 ## Performance
 

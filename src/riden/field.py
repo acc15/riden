@@ -1,4 +1,4 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable
 from enum import Enum
 from functools import partial
 from typing import Any, override
@@ -196,7 +196,7 @@ class Field(Enum):
         return self.write is not None
 
 
-def flatten_fields(fields: Sequence[str | Field | Sequence[str | Field]]):
+def flatten_fields(fields: Iterable[str | Field | Iterable[str | Field]]):
     for field in fields:
         match field:
             case Field(): yield field

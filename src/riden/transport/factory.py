@@ -19,7 +19,7 @@ def build_transport(
     address: int = 1,
     *,
     delay: float = 0.02,
-    keepalive: float | None = 5.0,
+    keepalive: float | None = None,
     retry_attempts: int = 1,
     retry_delay: float = 0.2,
     is_link_error: Callable[[BaseException], bool] = default_is_link_error,
@@ -32,7 +32,7 @@ def build_transport(
     KeepAlive never heals anything; it only detects that a ping failed and
     stops pinging until a real operation proves the link works again.
 
-    ``keepalive=None`` disables idle pings (and the background thread they
+    ``keepalive=None`` (the default) disables idle pings (and the background thread they
     need).  ``is_link_error`` is shared: Reconnectable retries these errors,
     and KeepAlive does not treat a logical error (one that is not a link
     error) as a reason to stop pinging.

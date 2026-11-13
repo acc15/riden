@@ -14,7 +14,7 @@ def measure_perf(rd, fn):
     print(f"{fn.__name__} executed in {(end-start)}s")
 
 def single_long_read(rd: Riden):
-    print(rd.read(*Field))
+    print(rd.read(f for f in Field if f.is_readable))
 
 def two_short_reads(rd: Riden):
     print(rd.read(Field.ID), rd.read(Field.V))

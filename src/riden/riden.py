@@ -1,5 +1,5 @@
 import contextlib
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Self, override
@@ -58,7 +58,7 @@ class Riden(AbstractContextManager["Riden"]):
         address: int = 1,
         *,
         delay: float = 0.02,
-        keepalive: float | None = 5.0,
+        keepalive: float | None = None,
         retry_attempts: int = 1,
         retry_delay: float = 0.2,
         is_link_error: Callable[[BaseException], bool] = default_is_link_error,
@@ -68,7 +68,7 @@ class Riden(AbstractContextManager["Riden"]):
         The stack is Modbus -> Delayed -> KeepAlive -> Reconnectable.  Keyword
         options (``delay``, ``keepalive``, ``retry_attempts``, ``retry_delay``,
         ``is_link_error``) are documented in
-        :func:`riden.transport.build_transport`; ``keepalive=None`` disables
+        :func:`riden.transport.build_transport`; ``keepalive=None`` (the default) disables
         the idle pings.  A failed ping stops the pings for that session; the
         next operation that proves the link works registers it again.
 
@@ -114,7 +114,7 @@ class Riden(AbstractContextManager["Riden"]):
         return self
 
     def read(
-        self, *fields: str | Field | Sequence[str | Field]
+        self, *fields: str | Field | Iterable[str | Field]
     ) -> dict[Field, Any]:
 
         state = self.require_state()
