@@ -11,8 +11,9 @@ Linux.
 - synchronous API with no background event loop:
   `with Riden.connect(...) as rd: ...`;
 - Bluetooth on Linux via `bt://` URLs (`AF_BLUETOOTH` + RFCOMM);
-- batched I/O: fields are read and written in one Modbus transaction per
-  contiguous register block, not one transaction per field;
+- batched I/O instead of one transaction per field: any set of fields is read
+  in one Modbus transaction, and written in one transaction per contiguous
+  register block;
 - automatic model and voltage/current scale detection on connect;
 - ready-made transport stack: transaction pacing, reconnect, logging, and
   optional keepalive pings;
@@ -56,8 +57,9 @@ with Riden.connect("bt://E2:F9:C6:24:71:C8?channel=1&timeout=0.5") as rd:
     v, i, p = rd.read("v", "i", "p").values()
     print(v, i, p)
 
-    # Several fields — a single write transaction.
-    rd.write(v_set=5.0, i_set=0.1, en=True)
+    # Adjacent registers — a single write transaction.
+    rd.write(v_set=5.0, i_set=0.1)
+    rd.write(en=True)
 ```
 
 For USB serial, pass the device path:
@@ -162,24 +164,42 @@ port = BtSerial("AA:BB:CC:DD:EE:FF", security=SecurityLevel.LOW)
 
 ## Performance
 
-`read()` selects the requested fields, computes their overall address range,
-and issues **one** `read_registers` call for the whole range, then decodes the
-raw registers into fields. `write()` encodes and validates all values first,
-merges adjacent fields into contiguous blocks, and sends one transaction per
-block.
+Reads and writes are batched differently, because Modbus can read a register
+range with gaps in it, but it cannot write a sparse list of registers.
 
-Therefore:
+**`read()` always uses one transaction.** It computes the overall address
+range of the requested fields and reads all of it at once, including any
+registers between them, then decodes the fields:
 
 ```python
-# 1 transaction instead of 3
+# V (10), I (11), P (12-13): 1 transaction, registers 10-13
 v, i, p = rd.read("v", "i", "p").values()
 
-# 1 transaction instead of 3
+# V_SET (8) and EN (18): still 1 transaction, but registers 8-18 (11 registers)
+rd.read("v_set", "en")
+```
+
+Fields far apart make that one transaction longer, so grouping nearby fields
+is preferable.
+
+**`write()` uses one transaction per contiguous block.** It encodes and
+validates all values first, then merges fields whose registers follow each
+other without a gap into one block. Every gap starts a new block and a new
+transaction:
+
+```python
+# V_SET (8) and I_SET (9) are adjacent: 1 transaction
+rd.write(v_set=5.0, i_set=0.1)
+
+# V_SET (8), I_SET (9) and EN (18): 2 transactions,
+# registers 8-9, then register 18
 rd.write(v_set=5.0, i_set=0.1, en=True)
 ```
 
-Sparse fields are still read in one transaction spanning the whole range
-between them, so grouping nearby fields is preferable.
+Since every value is validated before the first transaction, an invalid value
+never leaves the device partially updated. A link failure between the
+transactions still can: if the second write fails, the first one has
+already been applied.
 
 ## Development
 
