@@ -1,6 +1,6 @@
 [project]
 name = "riden"
-version = "0.1.0"
+version = "0.2.0"
 description = "Synchronous Python client for Riden RD60xx power supplies (USB serial and Bluetooth)"
 readme = "README.md"
 authors = [
