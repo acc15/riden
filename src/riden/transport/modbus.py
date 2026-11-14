@@ -18,11 +18,6 @@ from .transport import Op, Registers, Session, Transport, Tx
 
 type Port = serial.Serial | BtSerial | str
 
-# Defaults for a serial port given as a string (e.g. "/dev/ttyUSB0").
-# 115200 is the factory baud rate of Riden supplies.
-SERIAL_BAUDRATE = 115200
-SERIAL_TIMEOUT = 0.5
-
 class Modbus(Transport, Session):
     """Create a minimalmodbus client for one pyserial-like port.
 
@@ -50,8 +45,8 @@ class Modbus(Transport, Session):
                 # silent device would block read() forever.  A string path
                 # cannot carry these settings; pass a configured
                 # serial.Serial to override them.  BtSerial has its own.
-                self.port.baudrate = SERIAL_BAUDRATE
-                self.port.timeout = SERIAL_TIMEOUT
+                self.port.baudrate = 115200
+                self.port.timeout = 1
             self.owns_port = True
         else:
             self.port = port

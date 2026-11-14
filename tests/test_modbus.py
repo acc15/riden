@@ -5,7 +5,7 @@ from typing import Any, cast
 import pytest
 import serial
 
-from riden.transport.modbus import SERIAL_BAUDRATE, SERIAL_TIMEOUT, Modbus
+from riden.transport.modbus import Modbus
 from riden.transport.transport import Tx
 from tests.conftest import FakeInstrument, FakePort, as_port
 
@@ -137,8 +137,8 @@ def test_string_port_gets_baudrate_and_timeout() -> None:
     # silent device; a string path cannot carry these settings.
     modbus = Modbus("loop://")
     assert isinstance(modbus.port, serial.SerialBase)
-    assert modbus.port.baudrate == SERIAL_BAUDRATE == 115200
-    assert modbus.port.timeout == SERIAL_TIMEOUT == 0.5
+    assert modbus.port.baudrate == 115200
+    assert modbus.port.timeout == 1
 
 
 def test_external_serial_keeps_its_settings() -> None:
