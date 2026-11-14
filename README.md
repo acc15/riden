@@ -162,6 +162,35 @@ from riden.bt import BtSerial, SecurityLevel
 port = BtSerial("AA:BB:CC:DD:EE:FF", security=SecurityLevel.LOW)
 ```
 
+## RD6012P / RD6012PW current range
+
+These models have two current ranges, switched on the front panel: 6 A with
+0.1 mA resolution and 12 A with 1 mA resolution. The selected range is
+reported in register 20 (`Field.I_RANGE`: `0` is 6 A, otherwise 12 A).
+
+The library currently always uses the 12 A range scale for RD6012P
+(`i_scale=1000`, `i_max=12`). On the 6 A range, currents are therefore read
+and written 10 times off. `I_RANGE` can be read, but it is not used for
+scaling.
+
+This is deliberate: without a real device, any range handling would be a
+guess. Open questions:
+
+- **Can the range be changed over Modbus**, by writing register 20, or only
+  from the front panel?
+- **How do stored currents follow a range switch?** For example, set
+  `I_SET` to 0.0005 A on the 6 A range, then switch to 12 A, where the
+  resolution is 1 mA: does the device cut `I_SET` to 0 A, round it, or
+  rescale the raw value? For `I_SET` this is a minor issue, but presets
+  (`M1_I`, `M1_OCP`, ...) store currents as part of the preset. If they
+  change on a range switch, that is surprising, and the library has to know
+  exactly how.
+- **Which scale do the preset registers use?** The range of the moment, or
+  the range that was active when the preset was saved?
+
+A register dump from an RD6012P before and after a range switch (registers
+0–20 and 80–119) would answer most of these.
+
 ## Performance
 
 Reads and writes are batched differently, because Modbus can read a register

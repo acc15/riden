@@ -120,52 +120,52 @@ class Field(Enum):
     BACKLIGHT = 72, 1, read_int, write_int
 
     M0_V = 80, 1, read_v, write_v
-    M0_A = 81, 1, read_i, write_i
+    M0_I = 81, 1, read_i, write_i
     M0_OVP = 82, 1, read_v, write_ovp
     M0_OCP = 83, 1, read_i, write_ocp
 
     M1_V = 84, 1, read_v, write_v
-    M1_A = 85, 1, read_i, write_i
+    M1_I = 85, 1, read_i, write_i
     M1_OVP = 86, 1, read_v, write_ovp
     M1_OCP = 87, 1, read_i, write_ocp
 
     M2_V = 88, 1, read_v, write_v
-    M2_A = 89, 1, read_i, write_i
+    M2_I = 89, 1, read_i, write_i
     M2_OVP = 90, 1, read_v, write_ovp
     M2_OCP = 91, 1, read_i, write_ocp
 
     M3_V = 92, 1, read_v, write_v
-    M3_A = 93, 1, read_i, write_i
+    M3_I = 93, 1, read_i, write_i
     M3_OVP = 94, 1, read_v, write_ovp
     M3_OCP = 95, 1, read_i, write_ocp
 
     M4_V = 96, 1, read_v, write_v
-    M4_A = 97, 1, read_i, write_i
+    M4_I = 97, 1, read_i, write_i
     M4_OVP = 98, 1, read_v, write_ovp
     M4_OCP = 99, 1, read_i, write_ocp
 
     M5_V = 100, 1, read_v, write_v
-    M5_A = 101, 1, read_i, write_i
+    M5_I = 101, 1, read_i, write_i
     M5_OVP = 102, 1, read_v, write_ovp
     M5_OCP = 103, 1, read_i, write_ocp
 
     M6_V = 104, 1, read_v, write_v
-    M6_A = 105, 1, read_i, write_i
+    M6_I = 105, 1, read_i, write_i
     M6_OVP = 106, 1, read_v, write_ovp
     M6_OCP = 107, 1, read_i, write_ocp
 
     M7_V = 108, 1, read_v, write_v
-    M7_A = 109, 1, read_i, write_i
+    M7_I = 109, 1, read_i, write_i
     M7_OVP = 110, 1, read_v, write_ovp
     M7_OCP = 111, 1, read_i, write_ocp
 
     M8_V = 112, 1, read_v, write_v
-    M8_A = 113, 1, read_i, write_i
+    M8_I = 113, 1, read_i, write_i
     M8_OVP = 114, 1, read_v, write_ovp
     M8_OCP = 115, 1, read_i, write_ocp
 
     M9_V = 116, 1, read_v, write_v
-    M9_A = 117, 1, read_i, write_i
+    M9_I = 117, 1, read_i, write_i
     M9_OVP = 118, 1, read_v, write_ovp
     M9_OCP = 119, 1, read_i, write_ocp
 

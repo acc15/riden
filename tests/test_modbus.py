@@ -3,8 +3,9 @@
 from typing import Any, cast
 
 import pytest
+import serial
 
-from riden.transport.modbus import Modbus
+from riden.transport.modbus import SERIAL_BAUDRATE, SERIAL_TIMEOUT, Modbus
 from riden.transport.transport import Tx
 from tests.conftest import FakeInstrument, FakePort, as_port
 
@@ -129,3 +130,18 @@ def test_instrument_failure_closes_owned_port(
     assert port.opens == 1
     assert port.closes == 1
     assert not port.is_open
+
+
+def test_string_port_gets_baudrate_and_timeout() -> None:
+    # pyserial defaults (9600 baud, timeout=None) would block forever on a
+    # silent device; a string path cannot carry these settings.
+    modbus = Modbus("loop://")
+    assert isinstance(modbus.port, serial.SerialBase)
+    assert modbus.port.baudrate == SERIAL_BAUDRATE == 115200
+    assert modbus.port.timeout == SERIAL_TIMEOUT == 0.5
+
+
+def test_external_serial_keeps_its_settings() -> None:
+    port = serial.serial_for_url("loop://", baudrate=9600, timeout=2, do_not_open=True)
+    modbus = Modbus(port)
+    assert (modbus.port.baudrate, modbus.port.timeout) == (9600, 2)
