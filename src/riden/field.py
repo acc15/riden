@@ -1,85 +1,95 @@
 from collections.abc import Callable, Iterable
 from enum import Enum
-from functools import partial
 from typing import Any, override
 
 from .enums import Mode, Protection
-from .model import Model
+from .model import Spec
 from .transport import Registers
 
-type RegRead = Callable[[Registers, Model], Any]
-type RegWrite = Callable[[Any, Model], Registers]
+type RegRead = Callable[[Registers, Spec], Any]
+type RegWrite = Callable[[Any, Spec], Registers]
 
-def compose(*funcs):
-    def composed_fn(arg: Any, *others):
-        for fn in funcs:
-            arg = fn(arg, *others)
-        return arg
-    return composed_fn
-
-def read_flag(r: Registers, _: Model):
+def read_flag(r: Registers, _: Spec):
     return bool(r[0])
 
-def read_int(r: Registers, _: Model):
+def read_int(r: Registers, _: Spec):
     return r[0]
 
-def write_int(v, _: Model) -> Registers:
+def write_int(v, _: Spec) -> Registers:
     return (int(v),)
 
-def read_protection(r: Registers, _: Model):
+def read_protection(r: Registers, _: Spec):
     return Protection(r[0])
 
-def read_mode(r: Registers, _: Model):
+def read_mode(r: Registers, _: Spec):
     return Mode(r[0])
 
-def read_div(d, r: Registers, _: Model):
-    return float(r[0] / d)
-
-def div(d, x, _: Model):
-    return x / d
-
-def read_dw(r: Registers, _: Model):
+def read_dw(r: Registers, _: Spec):
     return r[0] << 16 | r[1]
 
-def read_temp(r: Registers, _: Model):
+def read_centi(r: Registers, _: Spec):
+    """One register in hundredths: firmware version, input voltage."""
+    return r[0] / 100
+
+def read_milli_dw(r: Registers, s: Spec):
+    """Two registers in thousandths: Ah, Wh."""
+    return read_dw(r, s) / 1000
+
+def read_temp(r: Registers, _: Spec):
     return (-1 if r[0] else 1) * r[1]
 
-def read_v(r: Registers, m: Model):
-    return r[0] / m.v_scale
+def read_v(r: Registers, s: Spec):
+    return r[0] / s.v_scale
 
-def write_v(v, m: Model, off = 0) -> Registers:
-    return (m.v_clamp(v, off),)
+def write_v(v, s: Spec) -> Registers:
+    """Voltage setpoint: the device accepts up to v_max + 1 V."""
+    return (s.v_clamp(v, 1),)
 
-def read_i(r: Registers, m: Model):
-    return r[0] / m.i_scale
+def write_ovp(v, s: Spec) -> Registers:
+    """Over-voltage protection: the device accepts up to v_max + 2 V."""
+    return (s.v_clamp(v, 2),)
 
-def write_i(v, m: Model, off = 0) -> Registers:
-    return (m.i_clamp(v, off),)
+def read_i(r: Registers, s: Spec):
+    return r[0] / s.i_scale
+
+def write_i(v, s: Spec) -> Registers:
+    """Current setpoint: the device accepts up to i_max + 0.1 A."""
+    return (s.i_clamp(v, 0.1),)
+
+def write_ocp(v, s: Spec) -> Registers:
+    """Over-current protection: the device accepts up to i_max + 0.2 A."""
+    return (s.i_clamp(v, 0.2),)
+
+def read_p(r: Registers, s: Spec):
+    return read_dw(r, s) / s.p_scale
 
 class Field(Enum):
     ID = 0, 1, read_int, None
     SN = 1, 2, read_dw, None
-    FW = 3, 1, partial(read_div, 100), None
+    FW = 3, 1, read_centi, None
     TEMP_C = 4, 2, read_temp, None
     TEMP_F = 6, 2, read_temp, None
     V_SET = 8, 1, read_v, write_v
     I_SET = 9, 1, read_i, write_i
     V = 10, 1, read_v, None
     I = 11, 1, read_i, None
-    P = 12, 2, compose(read_dw, partial(div, 100)), None
-    V_IN = 14, 1, partial(read_div, 100), None
+    P = 12, 2, read_p, None
+    V_IN = 14, 1, read_centi, None
     LOCK = 15, 1, read_flag, write_int
     PROTECTION = 16, 1, read_protection, None
     MODE = 17, 1, read_mode, None
     EN = 18, 1, read_flag, write_int
     PRESET = 19, 1, read_int, write_int
+    # RD6012P current range: 0 is the 6 A range, otherwise 12 A.
+    # Other models report 0.
+    I_RANGE = 20, 1, read_int, None
 
     BAT_EN = 32, 1, read_flag, None
     BAT_V = 33, 1, read_v, None
     EXT_TEMP_C = 34, 2, read_temp, None
     EXT_TEMP_F = 36, 2, read_temp, None
-    AH = 38, 2, compose(read_dw, partial(div, 1000)), None
-    WH = 40, 2, compose(read_dw, partial(div, 1000)), None
+    AH = 38, 2, read_milli_dw, None
+    WH = 40, 2, read_milli_dw, None
 
     YEAR = 48, 1, read_int, write_int
     MONTH = 49, 1, read_int, write_int
@@ -111,53 +121,53 @@ class Field(Enum):
 
     M0_V = 80, 1, read_v, write_v
     M0_A = 81, 1, read_i, write_i
-    M0_OVP = 82, 1, read_v, partial(write_v, off=2)
-    M0_OCP = 83, 1, read_i, write_i
+    M0_OVP = 82, 1, read_v, write_ovp
+    M0_OCP = 83, 1, read_i, write_ocp
 
     M1_V = 84, 1, read_v, write_v
     M1_A = 85, 1, read_i, write_i
-    M1_OVP = 86, 1, read_v, partial(write_v, off=2)
-    M1_OCP = 87, 1, read_i, write_i
+    M1_OVP = 86, 1, read_v, write_ovp
+    M1_OCP = 87, 1, read_i, write_ocp
 
     M2_V = 88, 1, read_v, write_v
     M2_A = 89, 1, read_i, write_i
-    M2_OVP = 90, 1, read_v, partial(write_v, off=2)
-    M2_OCP = 91, 1, read_i, write_i
+    M2_OVP = 90, 1, read_v, write_ovp
+    M2_OCP = 91, 1, read_i, write_ocp
 
     M3_V = 92, 1, read_v, write_v
     M3_A = 93, 1, read_i, write_i
-    M3_OVP = 94, 1, read_v, partial(write_v, off=2)
-    M3_OCP = 95, 1, read_i, write_i
+    M3_OVP = 94, 1, read_v, write_ovp
+    M3_OCP = 95, 1, read_i, write_ocp
 
     M4_V = 96, 1, read_v, write_v
     M4_A = 97, 1, read_i, write_i
-    M4_OVP = 98, 1, read_v, partial(write_v, off=2)
-    M4_OCP = 99, 1, read_i, write_i
+    M4_OVP = 98, 1, read_v, write_ovp
+    M4_OCP = 99, 1, read_i, write_ocp
 
     M5_V = 100, 1, read_v, write_v
     M5_A = 101, 1, read_i, write_i
-    M5_OVP = 102, 1, read_v, partial(write_v, off=2)
-    M5_OCP = 103, 1, read_i, write_i
+    M5_OVP = 102, 1, read_v, write_ovp
+    M5_OCP = 103, 1, read_i, write_ocp
 
     M6_V = 104, 1, read_v, write_v
     M6_A = 105, 1, read_i, write_i
-    M6_OVP = 106, 1, read_v, partial(write_v, off=2)
-    M6_OCP = 107, 1, read_i, write_i
+    M6_OVP = 106, 1, read_v, write_ovp
+    M6_OCP = 107, 1, read_i, write_ocp
 
     M7_V = 108, 1, read_v, write_v
     M7_A = 109, 1, read_i, write_i
-    M7_OVP = 110, 1, read_v, partial(write_v, off=2)
-    M7_OCP = 111, 1, read_i, write_i
+    M7_OVP = 110, 1, read_v, write_ovp
+    M7_OCP = 111, 1, read_i, write_ocp
 
     M8_V = 112, 1, read_v, write_v
     M8_A = 113, 1, read_i, write_i
-    M8_OVP = 114, 1, read_v, partial(write_v, off=2)
-    M8_OCP = 115, 1, read_i, write_i
+    M8_OVP = 114, 1, read_v, write_ovp
+    M8_OCP = 115, 1, read_i, write_ocp
 
     M9_V = 116, 1, read_v, write_v
     M9_A = 117, 1, read_i, write_i
-    M9_OVP = 118, 1, read_v, partial(write_v, off=2)
-    M9_OCP = 119, 1, read_i, write_i
+    M9_OVP = 118, 1, read_v, write_ovp
+    M9_OCP = 119, 1, read_i, write_ocp
 
     addr: int
     count: int

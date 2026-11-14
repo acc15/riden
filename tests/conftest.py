@@ -30,7 +30,7 @@ def make_registers() -> list[int]:
     regs[10] = 12000         # V = 12.0 V
     regs[11] = 5000          # I = 0.5 A
     regs[12] = 0             # P high word
-    regs[13] = 6000          # P = 60.0 W
+    regs[13] = 60000         # P = 60.0 W (RD6006P: / 1000)
     regs[14] = 2400          # V_IN = 24.0 V
     regs[18] = 1             # EN = True
     return regs

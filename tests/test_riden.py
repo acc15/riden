@@ -136,12 +136,23 @@ def test_write_updates_registers(
     assert session.registers[8] == 5000
 
 
-def test_write_clamps_to_model_limits(
+def test_write_accepts_device_voltage_limit(
     transport: MemoryTransport, session: MemorySession
 ) -> None:
     with Riden(transport) as rd:
-        rd.write({Field.V_SET: 100.0})
-    assert session.registers[8] == 60000
+        rd.write({Field.V_SET: 61.0})
+    assert session.registers[8] == 61000
+
+
+def test_write_rejects_out_of_range_before_any_io(
+    transport: MemoryTransport, session: MemorySession
+) -> None:
+    with Riden(transport) as rd:
+        before = list(session.transactions)
+        with pytest.raises(ValueError, match="field i_set: 15.0 is out of range 0..6.1"):
+            rd.write(v_set=5.0, i_set=15.0)
+        assert session.transactions == before
+    assert session.registers[8] == 12500
 
 
 def test_write_ovp_gets_two_volt_margin(
@@ -205,6 +216,17 @@ def test_open_failure_closes_session(
     assert rd.state is None
     with pytest.raises(RuntimeError, match="not initialized"):
         _ = rd.require_state()
+    assert session.closed
+
+
+def test_open_unknown_model_fails_and_closes_session(
+    transport: MemoryTransport, session: MemorySession
+) -> None:
+    session.registers[0] = 1
+    rd = Riden(transport)
+    with pytest.raises(LookupError, match="unknown Riden model code: 1"):
+        rd.open()
+    assert rd.state is None
     assert session.closed
 
 

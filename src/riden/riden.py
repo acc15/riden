@@ -113,9 +113,7 @@ class Riden(AbstractContextManager["Riden"]):
             raise
         return self
 
-    def read(
-        self, *fields: str | Field | Iterable[str | Field]
-    ) -> dict[Field, Any]:
+    def read(self, *fields: str | Field | Iterable[str | Field]) -> dict[Field, Any]:
 
         state = self.require_state()
 
@@ -146,7 +144,7 @@ class Riden(AbstractContextManager["Riden"]):
         for field, reader in readers.items():
             offset = field.addr - start
             raw = regs[offset:offset + field.count]
-            selected[field] = reader(raw, state.model)
+            selected[field] = reader(raw, state.model.value)
         return selected
 
     def write(self, *values: dict[str | Field, Any], **fields: Any) -> None:
@@ -180,7 +178,10 @@ class Riden(AbstractContextManager["Riden"]):
         # value does not leave the device partially updated.
         encoded: dict[Field, Registers] = {}
         for field, value in updates.items():
-            regs = writers[field](value, state.model)
+            try:
+                regs = writers[field](value, state.model.value)
+            except ValueError as exc:
+                raise ValueError(f"field {field.label}: {exc}") from exc
             if len(regs) != field.count:
                 raise ValueError(f"field {field.label} produced {len(regs)} registers, expected {field.count}")
             if any(reg < 0 or reg > 0xFFFF for reg in regs):
@@ -207,7 +208,7 @@ class Riden(AbstractContextManager["Riden"]):
         state = self.require_state()
         return (
             f"model={state.model} type={state.id} sn={state.sn:08X} fw={state.fw:.2f} "
-            f"input={v_in:.2f}V vscale={state.model.v_scale} iscale={state.model.i_scale}"
+            f"input={v_in:.2f}V vscale={state.model.value.v_scale} iscale={state.model.value.i_scale}"
         )
 
     def identity(self) -> str:

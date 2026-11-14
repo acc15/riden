@@ -40,7 +40,7 @@ class Tx:
 
     @classmethod
     def write(cls, start: int, data: Iterable[int]) -> Self:
-        values = data if isinstance(data, tuple) else tuple(data)
+        values = tuple(data)
         return cls(Op.WRITE, start, len(values), values)
 
 

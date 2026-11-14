@@ -1,6 +1,5 @@
 """Tests for the device register map and its value mappers."""
 
-from functools import partial
 from typing import Any, cast
 
 import pytest
@@ -9,7 +8,7 @@ from riden.enums import Mode, Protection
 from riden.field import *
 from riden.model import Model
 
-MODEL = Model.RD6006P
+MODEL = Model.RD6006P.value
 
 def RegRead_of(field: Field) -> RegRead:
     RegRead = field.read
@@ -77,14 +76,9 @@ def test_multiregister_RegReads() -> None:
 def test_scaled_RegReads_use_model_scales() -> None:
     assert read_v((12500,), MODEL) == 12.5
     assert read_i((10000,), MODEL) == 1.0
-    assert read_v((12500,), Model.RD6006) == 125.0
-    assert read_div(100, (1234,), MODEL) == 12.34
-    assert div(100, 6000, MODEL) == 60.0
-
-
-def test_compose_chains_mappers() -> None:
-    RegRead = compose(read_dw, partial(div, 100))
-    assert RegRead((0, 6000), MODEL) == 60.0
+    assert read_v((12500,), Model.RD6006.value) == 125.0
+    assert read_centi((1234,), MODEL) == 12.34
+    assert read_milli_dw((1, 0), MODEL) == 65.536
 
 
 def test_scalar_RegWrites_always_return_register_tuples() -> None:
@@ -92,19 +86,31 @@ def test_scalar_RegWrites_always_return_register_tuples() -> None:
     assert write_int(True, MODEL) == (1,)
     assert write_v(12.5, MODEL) == (12500,)
     assert write_i(1.0, MODEL) == (10000,)
-    assert write_v(62.0, MODEL, off=2) == (62000,)
+    assert write_ovp(62.0, MODEL) == (62000,)
+    assert write_ocp(6.2, MODEL) == (62000,)
 
 
-def test_RegWrites_clamp_to_model_limits() -> None:
-    assert write_v(-5.0, MODEL) == (0,)
-    assert write_v(100.0, MODEL) == (60000,)
-    assert write_i(100.0, MODEL) == (60000,)
+def test_RegWrites_accept_device_limits() -> None:
+    # RD6006P: setpoints up to v_max + 1 V and i_max + 0.1 A.
+    assert write_v(61.0, MODEL) == (61000,)
+    assert write_i(6.1, MODEL) == (61000,)
+
+
+@pytest.mark.parametrize(
+    ("writer", "value"),
+    [(write_v, -5.0), (write_v, 61.001), (write_v, 100.0), (write_i, -0.1), (write_i, 6.1001), (write_i, 100.0)],
+)
+def test_RegWrites_reject_out_of_range(writer: RegWrite, value: float) -> None:
+    with pytest.raises(ValueError, match="out of range"):
+        writer(value, MODEL)
 
 
 def test_field_RegReads() -> None:
     assert RegRead_of(Field.V_SET)((12500,), MODEL) == 12.5
     assert RegRead_of(Field.FW)((1234,), MODEL) == 12.34
-    assert RegRead_of(Field.P)((0, 6000), MODEL) == 60.0
+    assert RegRead_of(Field.P)((0, 60000), MODEL) == 60.0
+    assert RegRead_of(Field.P)((0, 6000), Model.RD6006.value) == 60.0
+    assert RegRead_of(Field.P)((1, 0), Model.RD6012.value) == 655.36
     assert RegRead_of(Field.TEMP_C)((1, 5), MODEL) == -5
     assert RegRead_of(Field.PROTECTION)((2,), MODEL) is Protection.OCP
 
@@ -129,3 +135,14 @@ def test_flatten_fields_accepts_any_iterable() -> None:
 def test_flatten_fields_rejects_other_types() -> None:
     with pytest.raises(TypeError):
         list(flatten_fields([cast(Any, 1)]))
+
+
+@pytest.mark.parametrize("model", [Model.RK6006, Model.RD6012])
+def test_preset_ocp_allows_device_limit(model: Model) -> None:
+    # Factory presets store OCP = i_max + 0.2 A (6.2 A on RK6006, 12.2 A on RK6012).
+    spec = model.value
+    write = Field.M9_OCP.write
+    assert write is not None
+    assert write(spec.i_max + 0.2, spec) == (round((spec.i_max + 0.2) * spec.i_scale),)
+    with pytest.raises(ValueError, match="out of range"):
+        write(spec.i_max + 0.3, spec)
