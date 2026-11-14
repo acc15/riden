@@ -37,13 +37,13 @@ def test_voltage_clamp() -> None:
     assert Model.RD6006P.v_clamp(12.5) == 12500
     assert Model.RD6006P.v_clamp(-1) == 0
     assert Model.RD6006P.v_clamp(100) == 60000
-    assert Model.RD6006P.v_clamp(61.5, offset=2) == 61500
-    assert Model.RD6006P.v_clamp(100, offset=2) == 62000
+    assert Model.RD6006P.v_clamp(61.5, off=2) == 61500
+    assert Model.RD6006P.v_clamp(100, off=2) == 62000
 
 
 def test_current_clamp() -> None:
     assert Model.RD6006P.i_clamp(1.0) == 10000
     assert Model.RD6006P.i_clamp(-1) == 0
     assert Model.RD6006P.i_clamp(100) == 60000
-    assert Model.RD6018.i_clamp(19, offset=2) == 1900
-    assert Model.RD6018.i_clamp(100, offset=2) == 2000
+    assert Model.RD6018.i_clamp(19, off=2) == 1900
+    assert Model.RD6018.i_clamp(100, off=2) == 2000

@@ -14,7 +14,7 @@ import minimalmodbus
 import serial
 
 from ..bt import BtSerial
-from .transport import Op, Session, Transport, Tx
+from .transport import Op, Registers, Session, Transport, Tx
 
 type Port = serial.Serial | BtSerial | str
 
@@ -85,7 +85,7 @@ class Modbus(Transport, Session):
             raise
 
     @override
-    def execute(self, tx: Tx) -> tuple[int, ...]:
+    def execute(self, tx: Tx) -> Registers:
         # Both read_register/read_registers and write_register/write_registers
         # produce identical requests, so only the plural forms are used.
         # The port check matters: minimalmodbus reopens a closed port by

@@ -12,8 +12,8 @@ ty:
     uv run ty check
 
 # Линтер
-ruff:
-    uv run ruff check .
+ruff *args:
+    uv run ruff check . {{ args }}
 
 # Тесты (аргументы пробрасываются: just test -k model)
 test *args:

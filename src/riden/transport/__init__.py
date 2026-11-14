@@ -4,7 +4,7 @@ from .keepalive import KeepAlive
 from .logging import Logging
 from .modbus import Modbus
 from .reconnectable import Reconnectable
-from .transport import Transport
+from .transport import Registers, Transport
 
 __all__ = [
     "Delayed",
@@ -12,6 +12,7 @@ __all__ = [
     "Logging",
     "Modbus",
     "Reconnectable",
+    "Registers",
     "Transport",
     "build_transport",
 ]

@@ -3,7 +3,7 @@
 import time
 from typing import override
 
-from .transport import Session, Transport, Tx
+from .transport import Registers, Session, Transport, Tx
 
 
 class DelayedSession(Session):
@@ -14,7 +14,7 @@ class DelayedSession(Session):
         self.delay = delay
 
     @override
-    def execute(self, tx: Tx) -> tuple[int, ...]:
+    def execute(self, tx: Tx) -> Registers:
         if self.delay > 0:
             time.sleep(self.delay)
         return self.inner.execute(tx)

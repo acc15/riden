@@ -18,7 +18,7 @@ from collections.abc import Callable
 from typing import override
 
 from .errors import is_link_error as default_is_link_error
-from .transport import Session, Transport, Tx
+from .transport import Registers, Session, Transport, Tx
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class KeepAliveSession(Session):
         self.lock = threading.RLock()
 
     @override
-    def execute(self, tx: Tx) -> tuple[int, ...]:
+    def execute(self, tx: Tx) -> Registers:
         with self.lock:
             try:
                 result = self.inner.execute(tx)

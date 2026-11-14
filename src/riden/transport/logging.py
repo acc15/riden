@@ -10,10 +10,10 @@ import itertools
 import logging
 from typing import override
 
-from .transport import Op, Session, Transport, Tx
+from .transport import Op, Registers, Session, Transport, Tx
 
 
-def _format_data(data: tuple[int, ...]) -> str:
+def _format_data(data: Registers) -> str:
     """Format registers as ``[1, 2, 3]`` without building a list."""
     return "[" + ", ".join(map(str, data)) + "]"
 
@@ -26,7 +26,7 @@ class LoggingSession(Session):
         self.inner = inner
 
     @override
-    def execute(self, tx: Tx) -> tuple[int, ...]:
+    def execute(self, tx: Tx) -> Registers:
         logger = self.transport.logger
         level = self.transport.level
         target = str(self.inner)

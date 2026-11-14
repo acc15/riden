@@ -2,6 +2,9 @@ from collections.abc import Sequence
 from enum import Enum
 
 
+def clamp(maximum: float, scale: float, v: float, off: float = 0) -> int:
+    return round(max(0, min(maximum + off, v)) * scale)
+
 class Model(Enum):
     RD6006 = (range(60060, 60065), 100, 1000, 60, 6)
     RD6006P = ([60065], 1000, 10000, 60, 6)
@@ -18,11 +21,11 @@ class Model(Enum):
         self.v_max = v_max
         self.i_max = i_max
 
-    def v_clamp(self, value: float, offset: float = 0) -> int:
-        return round(max(0, min(self.v_max + offset, value)) * self.v_scale)
+    def v_clamp(self, v: float, off: float = 0) -> int:
+        return clamp(self.v_max, self.v_scale, v, off)
 
-    def i_clamp(self, value: float, offset: float = 0) -> int:
-        return round(max(0, min(self.i_max + offset, value)) * self.i_scale)
+    def i_clamp(self, v: float, off: float = 0) -> int:
+        return clamp(self.i_max, self.i_scale, v, off)
 
     @staticmethod
     def find(code: int) -> Model:

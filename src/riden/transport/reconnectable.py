@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import override
 
 from .errors import is_link_error
-from .transport import Session, Transport, Tx
+from .transport import Registers, Session, Transport, Tx
 
 
 class ReconnectableSession(Session):
@@ -26,7 +26,7 @@ class ReconnectableSession(Session):
         self.session = session
 
     @override
-    def execute(self, tx: Tx) -> tuple[int, ...]:
+    def execute(self, tx: Tx) -> Registers:
         attempts = 0
 
         def can_retry() -> bool:

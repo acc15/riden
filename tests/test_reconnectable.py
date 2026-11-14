@@ -3,7 +3,7 @@
 import pytest
 
 from riden.transport.reconnectable import Reconnectable, ReconnectableSession
-from riden.transport.transport import Tx
+from riden.transport.transport import Registers, Tx
 
 
 class LinkError(Exception):
@@ -24,7 +24,7 @@ class FlakySession:
         self.kind = kind
         self.closed = False
 
-    def execute(self, tx: Tx) -> tuple[int, ...]:
+    def execute(self, tx: Tx) -> Registers:
         if self.kind == "logic":
             raise LogicError("device said no")
         if self.closed or self.transport.failures:

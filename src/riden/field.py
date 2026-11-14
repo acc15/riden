@@ -5,9 +5,10 @@ from typing import Any, override
 
 from .enums import Mode, Protection
 from .model import Model
+from .transport import Registers
 
-type RegRead = Callable[[tuple[int, ...], Model], Any]
-type RegWrite = Callable[[Any, Model], tuple[int, ...]]
+type RegRead = Callable[[Registers, Model], Any]
+type RegWrite = Callable[[Any, Model], Registers]
 
 def compose(*funcs):
     def composed_fn(arg: Any, *others):
@@ -16,43 +17,43 @@ def compose(*funcs):
         return arg
     return composed_fn
 
-def read_flag(r: tuple[int, ...], _: Model):
+def read_flag(r: Registers, _: Model):
     return bool(r[0])
 
-def read_int(r: tuple[int, ...], _: Model):
+def read_int(r: Registers, _: Model):
     return r[0]
 
-def write_int(v, _: Model) -> tuple[int, ...]:
+def write_int(v, _: Model) -> Registers:
     return (int(v),)
 
-def read_protection(r: tuple[int, ...], _: Model):
+def read_protection(r: Registers, _: Model):
     return Protection(r[0])
 
-def read_mode(r: tuple[int, ...], _: Model):
+def read_mode(r: Registers, _: Model):
     return Mode(r[0])
 
-def read_div(d, r: tuple[int, ...], _: Model):
+def read_div(d, r: Registers, _: Model):
     return float(r[0] / d)
 
 def div(d, x, _: Model):
     return x / d
 
-def read_dw(r: tuple[int, ...], _: Model):
+def read_dw(r: Registers, _: Model):
     return r[0] << 16 | r[1]
 
-def read_temp(r: tuple[int, ...], _: Model):
+def read_temp(r: Registers, _: Model):
     return (-1 if r[0] else 1) * r[1]
 
-def read_v(r: tuple[int, ...], m: Model):
+def read_v(r: Registers, m: Model):
     return r[0] / m.v_scale
 
-def write_v(v, m: Model, off = 0) -> tuple[int, ...]:
+def write_v(v, m: Model, off = 0) -> Registers:
     return (m.v_clamp(v, off),)
 
-def read_i(r: tuple[int, ...], m: Model):
+def read_i(r: Registers, m: Model):
     return r[0] / m.i_scale
 
-def write_i(v, m: Model, off = 0) -> tuple[int, ...]:
+def write_i(v, m: Model, off = 0) -> Registers:
     return (m.i_clamp(v, off),)
 
 class Field(Enum):

@@ -12,7 +12,7 @@ import pytest
 
 from riden.transport import keepalive
 from riden.transport.modbus import Port
-from riden.transport.transport import Op, Tx
+from riden.transport.transport import Op, Registers, Tx
 
 # Register map of a fake RD6006P device, in raw register values.
 BASE_REGISTERS = 128
@@ -127,7 +127,7 @@ class MemorySession:
         self.closed = False
         self.fail_with: BaseException | None = None
 
-    def execute(self, tx: Tx) -> tuple[int, ...]:
+    def execute(self, tx: Tx) -> Registers:
         if self.fail_with is not None:
             raise self.fail_with
         self.transactions.append(tx)
@@ -155,13 +155,13 @@ class MemoryTransport:
 class RecordingSession:
     """Session that records transactions and returns canned data."""
 
-    def __init__(self, result: tuple[int, ...] | None = None) -> None:
+    def __init__(self, result: Registers | None = None) -> None:
         self.result = () if result is None else result
         self.transactions: list[Tx] = []
         self.closed = False
         self.fail_with: BaseException | None = None
 
-    def execute(self, tx: Tx) -> tuple[int, ...]:
+    def execute(self, tx: Tx) -> Registers:
         self.transactions.append(tx)
         if self.fail_with is not None:
             raise self.fail_with

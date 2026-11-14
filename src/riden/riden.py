@@ -6,7 +6,7 @@ from typing import Any, Self, override
 
 from .field import Field, RegRead, RegWrite, flatten_fields
 from .model import Model
-from .transport import Transport, build_transport
+from .transport import Registers, Transport, build_transport
 from .transport.errors import is_link_error as default_is_link_error
 from .transport.modbus import Port
 from .transport.transport import Session, Tx
@@ -178,7 +178,7 @@ class Riden(AbstractContextManager["Riden"]):
 
         # Encode and validate everything before touching the bus, so an invalid
         # value does not leave the device partially updated.
-        encoded: dict[Field, tuple[int, ...]] = {}
+        encoded: dict[Field, Registers] = {}
         for field, value in updates.items():
             regs = writers[field](value, state.model)
             if len(regs) != field.count:

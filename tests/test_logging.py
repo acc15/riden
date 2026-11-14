@@ -6,7 +6,7 @@ from typing import override
 import pytest
 
 from riden.transport.logging import Logging, LoggingSession
-from riden.transport.transport import Tx
+from riden.transport.transport import Registers, Tx
 from tests.conftest import RecordingSession, RecordingTransport
 
 
@@ -15,7 +15,7 @@ class TargetedSession(RecordingSession):
 
     def __init__(
         self,
-        result: tuple[int, ...] | None = None,
+        result: Registers | None = None,
         target: str = "fake address=1",
     ):
         super().__init__(result)

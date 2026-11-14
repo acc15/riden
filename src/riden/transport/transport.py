@@ -13,11 +13,12 @@ inner one; the base ``Modbus`` transport is its own session because there is
 exactly one port, so ``open()`` returns self.
 """
 
-from collections.abc import Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Protocol, Self
 
+type Registers = tuple[int, ...]
 
 class Op(Enum):
     READ = auto()
@@ -31,22 +32,22 @@ class Tx:
     op: Op
     start: int
     count: int
-    data: tuple[int, ...]
+    data: Registers
 
     @classmethod
     def read(cls, start: int, count: int) -> Self:
         return cls(Op.READ, start, count, ())
 
     @classmethod
-    def write(cls, start: int, data: Sequence[int]) -> Self:
-        values = tuple(data)
+    def write(cls, start: int, data: Iterable[int]) -> Self:
+        values = data if isinstance(data, tuple) else tuple(data)
         return cls(Op.WRITE, start, len(values), values)
 
 
 class Session(Protocol):
     """An open connection that executes one register transaction at a time."""
 
-    def execute(self, tx: Tx) -> tuple[int, ...]: ...
+    def execute(self, tx: Tx) -> Registers: ...
 
     def close(self) -> None: ...
 
