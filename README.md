@@ -80,11 +80,32 @@ with Riden.connect("/dev/ttyUSB0", baudrate=9600, timeout=0.5) as rd:
     ...
 ```
 
-`baudrate`, `timeout` and `write_timeout` apply only when the library creates
-the port from a string. A `serial.Serial` or `BtSerial` object passed in keeps its own
-settings, but its lifetime passes to the client: leaving `with` (or `close()`)
-closes it, and a reconnect reopens it, even if it was passed in already open. RFCOMM has no baud rate, so for `bt://` the value only sets the
+RFCOMM has no baud rate, so for `bt://` the `baudrate` value only sets the
 Modbus inter-frame timing.
+
+For any other port setting (parity, stop bits, flow control, ...), create the
+port with pyserial and pass the object:
+
+```python
+import serial
+
+port = serial.serial_for_url(
+    "/dev/ttyUSB0", baudrate=115200, parity=serial.PARITY_EVEN, timeout=1.0,
+    do_not_open=True,
+)
+with Riden.connect(port) as rd:
+    ...
+```
+
+`baudrate`, `timeout` and `write_timeout` apply only when the library creates
+the port from a string. A port object keeps its own settings, so pyserial
+defaults apply to anything not set: 9600 baud and `timeout=None`, which blocks
+a read forever on a silent device. Set both explicitly.
+
+The client takes over the port's lifetime: leaving `with` (or `close()`)
+closes it, and a reconnect reopens it, even if it was passed in already open.
+`do_not_open=True` is not required, but without it the port (for `bt://`, the
+Bluetooth connection) is opened immediately rather than by `with`.
 
 USB works only when the USB interface is selected in the device menu.
 
