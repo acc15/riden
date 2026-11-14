@@ -1,7 +1,8 @@
 # riden
 
 A simple synchronous, single-threaded client for Riden laboratory power
-supplies (RD6006, RD6006P, RD6012, RD6012P, RD6018, RD6024, RK6006).
+supplies (RD6006, RD6006P, RD6006-Max, RD6012, RD6012P, RD6012H, RD6018,
+RD6018P, RD6024, RD6030, RK6006, RK6006H, RK6012, RK6018, RK4206H, RK8009).
 
 It speaks Modbus RTU over a regular serial port or Bluetooth SPP (RFCOMM) on
 Linux.
@@ -50,7 +51,7 @@ uv sync
 ```python
 from riden import Riden
 
-with Riden.connect("bt://E2:F9:C6:24:71:C8?channel=1&timeout=0.5") as rd:
+with Riden.connect("bt://E2:F9:C6:24:71:C8?channel=1") as rd:
     print(rd.status())
 
     # Several fields — a single device transaction.
@@ -69,6 +70,24 @@ with Riden.connect("/dev/ttyUSB0") as rd:
     ...
 ```
 
+The port is opened at 115200 baud, the factory setting. If the baud rate was
+changed in the device menu (9600, 19200, 38400, 57600), pass it explicitly.
+`timeout` is the read timeout in seconds (default `1.0`), `write_timeout` the
+write timeout (default `None`, writes block, as in pyserial):
+
+```python
+with Riden.connect("/dev/ttyUSB0", baudrate=9600, timeout=0.5) as rd:
+    ...
+```
+
+`baudrate`, `timeout` and `write_timeout` apply only when the library creates
+the port from a string. A `serial.Serial` or `BtSerial` object passed in keeps its own
+settings, but its lifetime passes to the client: leaving `with` (or `close()`)
+closes it, and a reconnect reopens it, even if it was passed in already open. RFCOMM has no baud rate, so for `bt://` the value only sets the
+Modbus inter-frame timing.
+
+USB works only when the USB interface is selected in the device menu.
+
 Field names are case-insensitive, so `"V"` and `"v"` refer to the same field.
 
 ## Example: voltage sweep + status
@@ -78,7 +97,7 @@ import time
 
 from riden import Riden
 
-with Riden.connect("bt://E2:F9:C6:24:71:C8?channel=1&timeout=0.5") as rd:
+with Riden.connect("bt://E2:F9:C6:24:71:C8?channel=1") as rd:
     try:
         rd.write(v_set=0.0, i_set=0.1, en=True)
 
@@ -105,18 +124,24 @@ this library opens.
 URL format:
 
 ```text
-bt://AA:BB:CC:DD:EE:FF?channel=1&timeout=0.5
+bt://AA:BB:CC:DD:EE:FF?channel=1&security=medium
 ```
 
 | Parameter         | Default  | Meaning                                       |
 |-------------------|----------|-----------------------------------------------|
 | `channel`         | `1`      | RFCOMM channel, `1`..`30`                     |
-| `timeout`         | `0.5`    | read/write timeout, seconds                   |
 | `connect_timeout` | `10`     | connection timeout, seconds                   |
 | `security`        | `medium` | `low`, `medium`, `high`, `fips` (see below)   |
 
 Only the parameters present in the URL are passed on; the defaults live in
 `BtSerial`. An unknown parameter or an invalid value raises `ValueError`.
+
+The URL holds only link settings. `timeout` (read) and `write_timeout` are
+regular port settings, passed as arguments, with pyserial semantics: `None`
+blocks, `0` does not block, a positive value is a deadline for the whole call.
+`Riden.connect("bt://...", timeout=0.5)` defaults to `1.0` s;
+`serial.serial_for_url("bt://...", timeout=0.5)` and `BtSerial(mac, timeout=0.5)`
+default to `None`, as pyserial does.
 `BtSerial` is registered as a pyserial URL handler, so `bt://` works anywhere a
 regular serial port is accepted.
 
@@ -172,6 +197,9 @@ The library currently always uses the 12 A range scale for RD6012P
 (`i_scale=1000`, `i_max=12`). On the 6 A range, currents are therefore read
 and written 10 times off. `I_RANGE` can be read, but it is not used for
 scaling.
+
+The 12 A range also has its own output-current calibration pair,
+`Field.CAL_I12_ZERO` / `Field.CAL_I12_SCALE` (registers 63 and 64).
 
 This is deliberate: without a real device, any range handling would be a
 guess. Open questions:
@@ -268,7 +296,7 @@ Scripts in `scripts/` are run through `uv run`:
 
 ```sh
 uv run scripts/v_sweep.py
-uv run scripts/link_test.py "bt://E2:F9:C6:24:71:C8?channel=1&timeout=0.5"
+uv run scripts/link_test.py "bt://E2:F9:C6:24:71:C8?channel=1"
 ```
 
 `just --list` shows the remaining tasks.

@@ -30,6 +30,29 @@ def test_field_metadata() -> None:
     assert Field.SN.count == 2
 
 
+def test_calibration_block_is_contiguous() -> None:
+    block = [
+        Field.CAL_V_ZERO,
+        Field.CAL_V_SCALE,
+        Field.CAL_BV_ZERO,
+        Field.CAL_BV_SCALE,
+        Field.CAL_I_ZERO,
+        Field.CAL_I_SCALE,
+        Field.CAL_BI_ZERO,
+        Field.CAL_BI_SCALE,
+        Field.CAL_I12_ZERO,
+        Field.CAL_I12_SCALE,
+    ]
+    assert [field.addr for field in block] == list(range(55, 65))
+    assert all(field.is_readable and field.is_writable for field in block)
+
+
+def test_cal_i12_is_readable_and_writable() -> None:
+    assert (Field.CAL_I12_ZERO.addr, Field.CAL_I12_SCALE.addr) == (63, 64)
+    assert RegRead_of(Field.CAL_I12_SCALE)((1234,), MODEL) == 1234
+    assert RegWrite_of(Field.CAL_I12_SCALE)(1234, MODEL) == (1234,)
+
+
 def test_field_label_and_str() -> None:
     assert Field.V_SET.label == "v_set"
     assert str(Field.V_SET) == "v_set"

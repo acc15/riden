@@ -49,6 +49,16 @@ def test_read_uses_one_contiguous_transaction(
     assert session.transactions[-1] == Tx.read(10, 2)
 
 
+def test_read_calibration_block_in_one_transaction(
+    transport: MemoryTransport, session: MemorySession
+) -> None:
+    # The vendor app reads 55-64 as one block; the 12 A pair (63/64) is part
+    # of it, not a separate read.
+    with Riden(transport) as rd:
+        rd.read(Field.CAL_V_ZERO, Field.CAL_I12_SCALE)
+    assert session.transactions[-1] == Tx.read(55, 10)
+
+
 def test_read_accepts_names_and_sequences(transport: MemoryTransport) -> None:
     with Riden(transport) as rd:
         values = rd.read("v_set", ["sn", Field.EN])

@@ -1,5 +1,4 @@
 from .delayed import Delayed
-from .factory import build_transport
 from .keepalive import KeepAlive
 from .logging import Logging
 from .modbus import Modbus
@@ -14,5 +13,4 @@ __all__ = [
     "Reconnectable",
     "Registers",
     "Transport",
-    "build_transport",
 ]

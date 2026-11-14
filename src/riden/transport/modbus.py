@@ -16,7 +16,9 @@ import serial
 from ..bt import BtSerial
 from .transport import Op, Registers, Session, Transport, Tx
 
-type Port = serial.Serial | BtSerial | str
+# Riden factory baud rate; the device menu also offers 9600..57600.
+DEFAULT_BAUDRATE = 115200
+DEFAULT_TIMEOUT = 1.0
 
 class Modbus(Transport, Session):
     """Create a minimalmodbus client for one pyserial-like port.
@@ -24,33 +26,43 @@ class Modbus(Transport, Session):
     Construction configures the transport but does not open it: a string is
     resolved with serial_for_url(..., do_not_open=True), which creates no fd
     and no socket.  open() opens the port if needed and returns self.
+
+    ``baudrate``, ``timeout`` and ``write_timeout`` apply only to a port
+    created here from a string; a port object passed in keeps its own
+    settings.  ``write_timeout=None`` (the pyserial default) blocks writes.  For bt://,
+    RFCOMM has no baud rate: ``baudrate`` only sets the Modbus inter-frame
+    timing.
+
+    A port object passed in is managed by Modbus: close() closes it and
+    open() reopens it, even if it was already open when passed in.
     """
 
     def __init__(
         self,
-        port: Port,
-        address: int = 1
+        port: serial.SerialBase | str,
+        address: int = 1,
+        *,
+        baudrate: int = DEFAULT_BAUDRATE,
+        timeout: float | None = DEFAULT_TIMEOUT,
+        write_timeout: float | None = None,
     ):
         if isinstance(port, str):
             # Configure the transport without opening it.  This is not I/O:
             # serial_for_url only parses the URL and constructs the object
             # (no fd, no socket).  It returns a pyserial port or, for bt://,
             # a BtSerial registered as a pyserial URL handler.
-            self.port: serial.Serial | BtSerial = cast(
-                "serial.Serial | BtSerial",
-                serial.serial_for_url(port, do_not_open=True),
+            # Without an explicit timeout pyserial would use timeout=None, and
+            # a silent device would block read() forever.  BtSerial takes the
+            # same arguments; its baudrate only drives Modbus timing.
+            self.port: serial.SerialBase = serial.serial_for_url(
+                port,
+                baudrate=baudrate,
+                timeout=timeout,
+                write_timeout=write_timeout,
+                do_not_open=True,
             )
-            if isinstance(self.port, serial.SerialBase):
-                # pyserial defaults to 9600 baud and timeout=None, so a
-                # silent device would block read() forever.  A string path
-                # cannot carry these settings; pass a configured
-                # serial.Serial to override them.  BtSerial has its own.
-                self.port.baudrate = 115200
-                self.port.timeout = 1
-            self.owns_port = True
         else:
             self.port = port
-            self.owns_port = not port.is_open
         self.address = address
         self.instrument: minimalmodbus.Instrument | None = None
 
@@ -64,8 +76,11 @@ class Modbus(Transport, Session):
 
     @override
     def open(self) -> Self:
-        if self.owns_port and not self.port.is_open:
-            self.port.open()
+        if not self.port.is_open:
+            # SerialBase is the common base of every pyserial port, but it
+            # does not declare open(): each concrete port class (serial.Serial,
+            # the URL handlers, BtSerial) defines its own.
+            cast(serial.Serial, self.port).open()
         try:
             # The instrument is built once and kept: it already points at the
             # right port with the right config, so a reopen only has to bring
@@ -73,10 +88,10 @@ class Modbus(Transport, Session):
             instrument = self.instrument
             if instrument is None:
                 # minimalmodbus duck-types the port (open/close/read/write/
-                # is_open) and its annotations only name serial.Serial;
-                # BtSerial implements the same interface.
+                # is_open), but its annotations name serial.Serial rather
+                # than the SerialBase every pyserial port derives from.
                 instrument = minimalmodbus.Instrument(
-                    cast("serial.Serial", self.port),
+                    cast(serial.Serial, self.port),
                     self.address,
                     mode=minimalmodbus.MODE_RTU,
                     debug=False,
@@ -85,10 +100,10 @@ class Modbus(Transport, Session):
                 self.instrument = instrument
             return self
         except BaseException:
-            # Only undo what this call did: a port that failed to open (or
-            # that belongs to the caller) must not be closed here.
-            if self.owns_port:
-                self.port.close()
+            # The port is closed whether this call opened it or it came in
+            # open: Modbus manages its lifetime.  A port that failed to open
+            # never reaches here, since port.open() is outside the try.
+            self.port.close()
             raise
 
     @override
@@ -110,5 +125,4 @@ class Modbus(Transport, Session):
         # Keep the instrument and the port: they still point at the right
         # port and hold the configuration, so the next open() reuses them.
         # Only the OS handle/socket is released.
-        if self.owns_port:
-            self.port.close()
+        self.port.close()

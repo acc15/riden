@@ -1,6 +1,10 @@
 """Tests for the Bluetooth serial shim and its URL handler."""
 
+import contextlib
+import re
 import socket
+import threading
+from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
@@ -11,44 +15,28 @@ from riden.bt.bt_serial import BtSerial, SecurityLevel, parse_mac
 from riden.bt.protocol_bt import parse_bt_url
 
 
-class FakeSocket:
-    """Minimal socket stand-in for the BtSerial read/write paths."""
+@pytest.fixture
+def pair() -> Iterator[tuple[BtSerial, socket.socket]]:
+    """An open BtSerial on one end of a socketpair, and the peer end.
 
-    def __init__(self, chunks: list[bytes] | None = None) -> None:
-        self.chunks = [] if chunks is None else list(chunks)
-        self.sent = bytearray()
-        self.closed = False
-        self.timeout: float | None = None
-
-    def sendall(self, data: bytes) -> None:
-        self.sent.extend(data)
-
-    def recv(self, size: int, flags: int = 0) -> bytes:
-        if not self.chunks:
-            return b""
-        chunk = self.chunks.pop(0)
-        return chunk[:size]
-
-    def settimeout(self, timeout: float | None) -> None:
-        self.timeout = timeout
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def open_serial(
-    chunks: list[bytes] | None = None,
-    timeout: float | None = None,
-) -> tuple[BtSerial, FakeSocket]:
-    """Build a BtSerial with an injected fake socket.
-
-    ``timeout=None`` exercises the blocking read path and ``timeout=0`` the
-    non-blocking one; both avoid select().
+    A real socket keeps select(), FIONREAD and MSG_DONTWAIT honest.
     """
-    bt = BtSerial(timeout=timeout)
-    sock = FakeSocket(chunks)
-    bt.sock = cast(socket.socket, sock)
-    return bt, sock
+    ours, peer = socket.socketpair()
+    bt = BtSerial()
+    bt.sock = ours
+    bt.is_open = True
+    yield bt, peer
+    bt.close()
+    peer.close()
+
+
+def fill_send_buffer(bt: BtSerial) -> None:
+    """Fill the kernel send buffer, so the next write would block."""
+    sock = cast(socket.socket, bt.sock)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+    with contextlib.suppress(BlockingIOError):
+        while True:
+            sock.send(b"x" * 4096, socket.MSG_DONTWAIT)
 
 
 def test_parse_mac_normalizes() -> None:
@@ -66,8 +54,8 @@ def test_parse_bt_url_returns_only_present_params() -> None:
     assert mac == "AA:BB:CC:DD:EE:FF"
     assert kwargs == {}
 
-    _, kwargs = parse_bt_url("bt://AA:BB:CC:DD:EE:FF?timeout=2")
-    assert kwargs == {"timeout": 2.0}
+    _, kwargs = parse_bt_url("bt://AA:BB:CC:DD:EE:FF?channel=2")
+    assert kwargs == {"channel": 2}
 
 
 def test_serial_for_url_keeps_bt_serial_defaults() -> None:
@@ -85,11 +73,11 @@ def test_serial_for_url_keeps_bt_serial_defaults() -> None:
 
 def test_parse_bt_url_options() -> None:
     mac, kwargs = parse_bt_url(
-        "bt://aa:bb:cc:dd:ee:ff/?channel=2&timeout=1.5&connect_timeout=3&security=LOW"
+        "bt://aa:bb:cc:dd:ee:ff/?channel=2&connect_timeout=3&security=LOW"
     )
     assert mac == "aa:bb:cc:dd:ee:ff"
     assert kwargs == {
-        "channel": 2, "timeout": 1.5, "connect_timeout": 3.0,
+        "channel": 2, "connect_timeout": 3.0,
         "security": SecurityLevel.LOW,
     }
 
@@ -106,7 +94,9 @@ def test_parse_bt_url_keeps_zero_security_level() -> None:
         "bt://",
         "bt://AA:BB:CC:DD:EE:FF/extra",
         "bt://AA:BB:CC:DD:EE:FF?channel=abc",
-        "bt://AA:BB:CC:DD:EE:FF?timeout=abc",
+        "bt://AA:BB:CC:DD:EE:FF?connect_timeout=abc",
+        # The read timeout is an argument, not a URL parameter.
+        "bt://AA:BB:CC:DD:EE:FF?timeout=0.5",
         "bt://AA:BB:CC:DD:EE:FF?security=bogus",
         "bt://AA:BB:CC:DD:EE:FF?timout=1",
     ],
@@ -122,13 +112,13 @@ def test_serial_for_url_returns_configured_bt_serial() -> None:
     port = cast(
         BtSerial,
         serial.serial_for_url(
-            "bt://AA:BB:CC:DD:EE:FF?channel=3&timeout=0.5", do_not_open=True
+            "bt://AA:BB:CC:DD:EE:FF?channel=3", timeout=2, do_not_open=True
         ),
     )
     assert isinstance(port, BtSerial)
     assert port.port == "AA:BB:CC:DD:EE:FF"
     assert port.channel == 3
-    assert port.timeout == 0.5
+    assert port.timeout == 2
     assert not port.is_open
 
 
@@ -171,50 +161,168 @@ def test_open_sets_security_before_connect(
     assert names.index("setsockopt") < names.index("connect")
 
 
-def test_closed_serial_raises() -> None:
+def test_is_a_pyserial_port() -> None:
+    bt = BtSerial()
+    assert isinstance(bt, serial.SerialBase)
+    # pyserial defaults, straight from SerialBase.
+    default = serial.Serial()
+    assert (bt.baudrate, bt.timeout, bt.write_timeout) == (
+        default.baudrate, default.timeout, default.write_timeout
+    )
+
+
+def test_accepts_pyserial_line_settings() -> None:
+    bt = BtSerial(bytesize=7, parity=serial.PARITY_EVEN, inter_byte_timeout=0.1)
+    assert (bt.bytesize, bt.parity, bt.inter_byte_timeout) == (7, "E", 0.1)
+    with pytest.raises(ValueError, match="unexpected keyword"):
+        BtSerial(bogus=1)
+
+
+@pytest.mark.parametrize("op", ["read", "write", "in_waiting", "reset_input_buffer"])
+def test_closed_serial_raises(op: str) -> None:
     bt = BtSerial()
     assert not bt.is_open
-    with pytest.raises(serial.SerialException, match="closed"):
-        bt.read(1)
+    with pytest.raises(serial.PortNotOpenError):
+        attr = getattr(bt, op)
+        if op == "write":
+            attr(b"x")
+        elif callable(attr):
+            attr()
 
 
-def test_write_sends_bytes() -> None:
-    bt, sock = open_serial()
+def test_write_sends_bytes(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, peer = pair
     assert bt.write(b"abc") == 3
-    assert bytes(sock.sent) == b"abc"
+    assert peer.recv(10) == b"abc"
 
 
-def test_blocking_read_collects_all_bytes() -> None:
-    bt, _ = open_serial([b"ab", b"cd"], timeout=None)
+def test_blocking_read_collects_all_bytes(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, peer = pair
+    peer.send(b"ab")
+    threading.Timer(0.05, peer.send, (b"cd",)).start()
     assert bt.read(4) == b"abcd"
 
 
-def test_blocking_read_raises_when_peer_closes() -> None:
-    bt, _ = open_serial([], timeout=None)
+def test_read_raises_when_peer_closes(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, peer = pair
+    peer.close()
     with pytest.raises(serial.SerialException, match="closed the link"):
         bt.read(1)
 
 
-def test_non_blocking_read_returns_available_bytes() -> None:
-    bt, _ = open_serial([b"xy"], timeout=0)
-    assert bt.read(2) == b"xy"
-    assert bt.read(2) == b""
+def test_non_blocking_read_returns_available_bytes(
+    pair: tuple[BtSerial, socket.socket],
+) -> None:
+    bt, peer = pair
+    bt.timeout = 0
+    peer.send(b"xy")
+    assert bt.read(5) == b"xy"
+    assert bt.read(5) == b""
 
 
-def test_zero_size_read_returns_empty() -> None:
-    bt, _ = open_serial([b"xy"], timeout=0)
+def test_timed_read_returns_partial_data(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, peer = pair
+    bt.timeout = 0.05
+    peer.send(b"xy")
+    assert bt.read(5) == b"xy"
+
+
+def test_inter_byte_timeout_ends_read(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, peer = pair
+    bt.timeout = None  # would block forever without inter_byte_timeout
+    bt.inter_byte_timeout = 0.05
+    peer.send(b"xy")
+    assert bt.read(5) == b"xy"
+
+
+def test_zero_size_read_returns_empty(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, _ = pair
     assert bt.read(0) == b""
 
 
-def test_close_is_idempotent() -> None:
-    bt, sock = open_serial()
+def test_in_waiting_and_reset_input_buffer(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, peer = pair
+    peer.send(b"abc")
+    assert bt.in_waiting == 3
+    bt.reset_input_buffer()
+    assert bt.in_waiting == 0
+
+
+def test_readline_comes_from_serialbase(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, peer = pair
+    bt.timeout = 0.05
+    peer.send(b"one\ntwo")
+    assert bt.readline() == b"one\n"
+
+
+def test_close_is_idempotent(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, _ = pair
+    sock = cast(socket.socket, bt.sock)
     bt.close()
     bt.close()
-    assert sock.closed
+    assert sock.fileno() == -1
     assert not bt.is_open
 
 
-def test_flush_helpers_do_not_raise() -> None:
-    bt, _ = open_serial()
+def test_noop_helpers_do_not_raise(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, _ = pair
     bt.flush()
     bt.reset_output_buffer()
+    bt.send_break()
+    bt.rts = False
+    bt.dtr = False
+    bt.baudrate = 19200  # _reconfigure_port on an open port
+    assert (bt.cts, bt.dsr, bt.ri, bt.cd) == (True, True, False, True)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"baudrate": -1}, {"baudrate": "abc"}, {"timeout": -1}, {"write_timeout": "1"}],
+)
+def test_validation_matches_pyserial(kwargs: dict[str, Any]) -> None:
+    # Validation comes from SerialBase: the same exception as serial.Serial.
+    with pytest.raises(Exception) as expected:
+        serial.Serial(**kwargs)
+    with pytest.raises(expected.type, match=re.escape(str(expected.value))):
+        BtSerial(**kwargs)
+
+
+def test_open_leaves_socket_blocking(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bt_serial.socket, "socket", RecordingSocket)
+    bt = BtSerial("AA:BB:CC:DD:EE:FF", timeout=0.5, connect_timeout=3)
+    assert bt.is_open
+    timeouts = [args for name, args in RecordingSocket.last.calls if name == "settimeout"]
+    # connect_timeout for connect(), then blocking; never the read timeout.
+    assert timeouts == [(3,), (None,)]
+
+
+def test_timeout_change_does_not_touch_socket(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, _ = pair
+    sock = cast(socket.socket, bt.sock)
+    bt.timeout = 0.5
+    bt.write_timeout = 0
+    assert sock.gettimeout() is None
+
+
+def test_non_blocking_write_on_full_buffer_returns_zero(
+    pair: tuple[BtSerial, socket.socket],
+) -> None:
+    bt, _ = pair
+    bt.write_timeout = 0
+    fill_send_buffer(bt)
+    assert bt.write(b"abc") == 0
+
+
+def test_timed_write_raises_on_full_buffer(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, _ = pair
+    bt.write_timeout = 0.05
+    fill_send_buffer(bt)
+    with pytest.raises(serial.SerialTimeoutException, match="Write timeout"):
+        bt.write(b"abc")
+
+
+def test_timed_write_sends_everything(pair: tuple[BtSerial, socket.socket]) -> None:
+    bt, peer = pair
+    bt.write_timeout = 1.0
+    assert bt.write(b"abcde") == 5
+    assert peer.recv(10) == b"abcde"

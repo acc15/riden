@@ -1,22 +1,28 @@
-"""Tests for the default transport stack."""
+"""Tests for the default transport stack built by Riden.connect."""
 
 import logging
-from typing import cast
+from typing import Any, cast
 
+from riden.riden import Riden
 from riden.transport import (
     Delayed,
     KeepAlive,
     Logging,
     Modbus,
     Reconnectable,
-    build_transport,
+    Transport,
 )
 from riden.transport.transport import Tx
 from tests.conftest import FakeInstrument, FakePort, as_port
 
 
+def build(*args: Any, **kwargs: Any) -> Transport:
+    """The transport stack of a client from Riden.connect (no I/O)."""
+    return Riden.connect(*args, **kwargs).transport
+
+
 def test_stack_without_keepalive(fake_instrument: type[FakeInstrument]) -> None:
-    stack = build_transport(as_port(FakePort()), keepalive=None, delay=0.01)
+    stack = build(as_port(FakePort()), keepalive=None, delay=0.01)
     assert isinstance(stack, Reconnectable)
     delayed = cast(Delayed, stack.inner)
     assert isinstance(delayed, Delayed)
@@ -26,7 +32,7 @@ def test_stack_without_keepalive(fake_instrument: type[FakeInstrument]) -> None:
 
 
 def test_stack_with_keepalive(fake_instrument: type[FakeInstrument]) -> None:
-    stack = build_transport(as_port(FakePort()), keepalive=5.0, delay=0.01)
+    stack = build(as_port(FakePort()), keepalive=5.0, delay=0.01)
     assert isinstance(stack, Reconnectable)
     keepalive = cast(KeepAlive, stack.inner)
     assert isinstance(keepalive, KeepAlive)
@@ -38,7 +44,7 @@ def test_stack_with_keepalive(fake_instrument: type[FakeInstrument]) -> None:
 
 
 def test_logging_can_be_disabled(fake_instrument: type[FakeInstrument]) -> None:
-    stack = build_transport(
+    stack = build(
         as_port(FakePort()),
         keepalive=None,
         delay=0.01,
@@ -51,8 +57,8 @@ def test_logging_can_be_disabled(fake_instrument: type[FakeInstrument]) -> None:
 
 
 def test_custom_logger_and_level(fake_instrument: type[FakeInstrument]) -> None:
-    logger = logging.getLogger("riden.test.factory")
-    stack = build_transport(
+    logger = logging.getLogger("riden.test.connect")
+    stack = build(
         as_port(FakePort()),
         keepalive=None,
         delay=0.01,
@@ -67,7 +73,7 @@ def test_custom_logger_and_level(fake_instrument: type[FakeInstrument]) -> None:
 
 def test_stack_end_to_end(fake_instrument: type[FakeInstrument]) -> None:
     port = FakePort()
-    stack = build_transport(as_port(port), keepalive=None, delay=0, logger=None)
+    stack = build(as_port(port), keepalive=None, delay=0, logger=None)
 
     session = stack.open()
     assert session.execute(Tx.read(0, 3)) == (60065, 0, 7)
@@ -78,3 +84,13 @@ def test_stack_end_to_end(fake_instrument: type[FakeInstrument]) -> None:
     assert port.opens == 1
     assert port.closes == 1
     assert not port.is_open
+
+
+def test_baudrate_and_timeout_reach_modbus() -> None:
+    stack = build(
+        "loop://", baudrate=9600, timeout=2, write_timeout=3, delay=0, logger=None
+    )
+    modbus = cast(Modbus, cast(Reconnectable, stack).inner)
+    assert isinstance(modbus, Modbus)
+    port = modbus.port
+    assert (port.baudrate, port.timeout, port.write_timeout) == (9600, 2, 3)

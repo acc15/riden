@@ -1,36 +1,44 @@
-"""Bluetooth SPP transport shaped like a pyserial port.
+"""Bluetooth SPP (RFCOMM) port for pyserial.
 
-BtSerial.port is always a Bluetooth MAC, just as serial.Serial.port is a
-device path.  URL parsing lives only in serial_urlhandler/protocol_bt.py,
-which pyserial uses via serial_for_url():
+BtSerial is a serial.SerialBase subclass, like pyserial's own URL handlers
+(socket://, rfc2217://): it has the full pyserial API, and settings,
+validation and defaults all come from SerialBase.  BtSerial.port is a
+Bluetooth MAC, just as serial.Serial.port is a device path.  URL parsing
+lives only in protocol_bt.py, which pyserial uses via serial_for_url():
 
-    serial.serial_for_url("bt://E2:F9:C6:24:71:C8?channel=1&timeout=0.5")
+    serial.serial_for_url("bt://E2:F9:C6:24:71:C8?channel=1", timeout=0.5)
 
 Direct construction uses the MAC:
 
     BtSerial("E2:F9:C6:24:71:C8", channel=1, timeout=0.5)
 
-The connect timeout is an internal constant (CONNECT_TIMEOUT), not part of the
-serial interface.  For a configured but closed object use
-serial_for_url(..., do_not_open=True), or BtSerial(None) and set .port before
-open().
+The URL carries only link settings (channel, connect_timeout, security);
+everything else is a regular pyserial argument with pyserial semantics.
+``timeout``, ``write_timeout`` and ``inter_byte_timeout`` are enforced with
+select(); the socket itself is always blocking after connect().  Serial line
+settings (baudrate, bytesize, parity, ...) mean nothing to RFCOMM and are
+accepted but ignored, except that minimalmodbus derives its inter-frame
+silence from ``baudrate``.
 """
-import contextlib
+import errno
+import fcntl
 import re
 import select
 import socket
-import time
+import struct
+import termios
 from enum import IntEnum
-from typing import override
+from typing import Any, override
 
 import serial
-
-# Fixed for minimalmodbus; RFCOMM has no real baudrate.
-BAUDRATE = 115200
+from serial import PortNotOpenError, SerialException, SerialTimeoutException, Timeout
 
 # Python's socket module does not export these.
 SOL_BLUETOOTH = 274
 BT_SECURITY = 4
+
+# Transient errnos: the same call can simply be retried.
+_RETRY_ERRNOS = frozenset({errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR})
 
 
 class SecurityLevel(IntEnum):
@@ -56,70 +64,48 @@ def parse_mac(value: str) -> str:
     return value.replace("-", ":").upper()
 
 
-class BtSerial(contextlib.AbstractContextManager["BtSerial"]):
+class BtSerial(serial.SerialBase):
+    """pyserial port over an RFCOMM socket.
 
-    def __init__(self, 
-        port: str | None = None, 
+    Positional and pyserial keyword arguments go to SerialBase unchanged,
+    with its defaults; ``channel``, ``connect_timeout`` and ``security`` are
+    RFCOMM link settings and keyword-only.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
         channel: int = 1,
-        timeout: float | None = 0.5,
         connect_timeout: float | None = 10,
         security: SecurityLevel = SecurityLevel.MEDIUM,
+        **kwargs: Any,
     ):
-        self.port = port
-        self.channel = channel
+        # SerialBase.__init__ opens the port when one is given, so the link
+        # settings must be in place before it runs.
         self.sock: socket.socket | None = None
-        self._buf = bytearray()
-        self.timeout = timeout
+        self.channel = channel
         self.connect_timeout = connect_timeout
         self.security = security
-        if port is not None:
-            self.open()
+        super().__init__(*args, **kwargs)
 
-    @property
-    def timeout(self) -> float | None:
-        return self._timeout
-
-    @timeout.setter
-    def timeout(self, value: float | None) -> None:
-        if value is not None:
-            try:
-                value + 1  # numeric check, like pyserial
-            except TypeError:
-                raise ValueError(f"Not a valid timeout: {value!r}") from None
-            if value < 0:
-                raise ValueError(f"Not a valid timeout: {value!r}")
-        self._timeout = value
-        if self.sock is not None:
-            self.sock.settimeout(value)
-
-    @property
-    def baudrate(self) -> int:
-        # minimalmodbus reads this to calculate the 3.5-character silent
-        # period; RFCOMM itself has no baudrate setting.
-        return BAUDRATE
-
-    @property
-    def is_open(self) -> bool:
-        return self.sock is not None
-
-    # -- pyserial-compatible lifecycle ------------------------------------
-    def ensure_opened(self) -> socket.socket:
+    def _require_sock(self) -> socket.socket:
         sock = self.sock
         if sock is None:
-            raise serial.SerialException("Bluetooth socket is closed")
+            raise PortNotOpenError()
         return sock
 
+    # -- lifecycle --------------------------------------------------------
     def open(self) -> None:
+        if self._port is None:
+            raise SerialException("Port must be configured before it can be used.")
         if self.is_open:
-            raise serial.SerialException("Port is already open.")
-        if self.port is None:
-            raise serial.SerialException("Port must be configured before it can be used.")
+            raise SerialException("Port is already open.")
 
         try:
-            mac = parse_mac(str(self.port))
+            mac = parse_mac(str(self._port))
         except ValueError as exc:
-            raise serial.SerialException(str(exc)) from exc
-        channel = int(self.channel)
+            raise SerialException(str(exc)) from exc
+        channel = self.channel
         if not 1 <= channel <= 30:
             raise ValueError(f"Bluetooth channel must be 1..30, got {channel}")
 
@@ -130,98 +116,144 @@ class BtSerial(contextlib.AbstractContextManager["BtSerial"]):
             sock.setsockopt(SOL_BLUETOOTH, BT_SECURITY, bytes((self.security, 0)))
             sock.settimeout(self.connect_timeout)
             sock.connect((mac, channel))
-            sock.settimeout(self.timeout)
-        except Exception:
+            # Blocking from here on: read() and write() enforce the pyserial
+            # timeouts with select(), so changing them never touches the socket.
+            sock.settimeout(None)
+        except BaseException:
             sock.close()
             raise
 
         self.sock = sock
-        self.mac = mac
-        self.channel = channel
-        self._buf.clear()
+        self.is_open = True
 
+    @override
     def close(self) -> None:
         sock = self.sock
         self.sock = None
+        self.is_open = False
         if sock is not None:
             sock.close()
 
-    def __del__(self):
-        with contextlib.suppress(Exception):
-            self.close()
+    def _reconfigure_port(self) -> None:
+        """SerialBase hook for setting changes; RFCOMM has nothing to apply."""
+
+    # -- I/O --------------------------------------------------------------
+    @property
+    def in_waiting(self) -> int:
+        """Number of received bytes not read yet."""
+        sock = self._require_sock()
+        buf = fcntl.ioctl(sock.fileno(), termios.FIONREAD, struct.pack("i", 0))
+        return struct.unpack("i", buf)[0]
 
     @override
-    def __exit__(self, *_):
-        self.close()
-
-    # -- pyserial-like I/O ------------------------------------------------
-    def write(self, data: bytes) -> int:
-        sock = self.ensure_opened()
-        sock.sendall(bytes(data))
-        return len(data)
-
     def read(self, size: int = 1) -> bytes:
-        sock = self.ensure_opened()
-        if size <= 0:
-            return b""
-
-        if self.timeout is None:
-            # pyserial semantics: None means blocking until size bytes or EOF.
-            while len(self._buf) < size:
-                chunk = sock.recv(size - len(self._buf))
-                if not chunk:
-                    raise serial.SerialException("Bluetooth peer closed the link")
-                self._buf.extend(chunk)
-            out = bytes(self._buf[:size])
-            del self._buf[:size]
-            return out
-
-        if self.timeout == 0:
-            # pyserial semantics: return immediately with what is available.
+        sock = self._require_sock()
+        read = bytearray()
+        timeout = Timeout(self._timeout)
+        while len(read) < size:
+            wait = timeout.time_left()
+            # pyserial semantics: once data has started to arrive, a gap
+            # longer than inter_byte_timeout ends the read.
+            inter = self._inter_byte_timeout
+            if inter is not None and read:
+                wait = inter if wait is None else min(wait, inter)
             try:
-                chunk = sock.recv(size - len(self._buf), socket.MSG_DONTWAIT)
-                if chunk:
-                    self._buf.extend(chunk)
+                # select() waits with the time left, so recv() on the
+                # blocking socket returns at once and cannot pass the deadline.
+                if not select.select([sock], [], [], wait)[0]:
+                    break
+                chunk = sock.recv(size - len(read))
+            except OSError as exc:
+                if exc.errno in _RETRY_ERRNOS:
+                    continue
+                raise SerialException(f"read failed: {exc}") from exc
+            if not chunk:
+                raise SerialException("Bluetooth peer closed the link")
+            read.extend(chunk)
+            if timeout.expired():
+                break
+        return bytes(read)
+
+    @override
+    def write(self, data: Any) -> int:
+        sock = self._require_sock()
+        view = memoryview(serial.to_bytes(data))
+        timeout = Timeout(self._write_timeout)
+        if timeout.is_non_blocking:
+            # pyserial semantics: write what fits, return the count.
+            try:
+                return sock.send(view, socket.MSG_DONTWAIT)
+            except BlockingIOError:
+                return 0
+            except OSError as exc:
+                raise SerialException(f"write failed: {exc}") from exc
+
+        # SerialException derives from OSError, so the timeouts are raised
+        # outside the try block, which only wraps the socket call.
+        sent = 0
+        while sent < len(view):
+            if not select.select([], [sock], [], timeout.time_left())[1]:
+                raise SerialTimeoutException("Write timeout")
+            try:
+                sent += sock.send(view[sent:], socket.MSG_DONTWAIT)
             except BlockingIOError:
                 pass
             except OSError as exc:
-                raise serial.SerialException(str(exc)) from exc
-            out = bytes(self._buf[:size])
-            del self._buf[:size]
-            return out
+                if exc.errno not in _RETRY_ERRNOS:
+                    raise SerialException(f"write failed: {exc}") from exc
+            if sent < len(view) and timeout.expired():
+                raise SerialTimeoutException("Write timeout")
+        return sent
 
-        # timeout > 0: the timeout is for the whole call (pyserial semantics).
-        # select() waits for readability with the time left, so the socket
-        # timeout is never touched and recv() cannot block past the deadline.
-        deadline = time.monotonic() + self.timeout
-        while len(self._buf) < size:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            if not select.select([sock], [], [], remaining)[0]:
-                break
-            chunk = sock.recv(size - len(self._buf))
-            if not chunk:
-                raise serial.SerialException("Bluetooth peer closed the link")
-            self._buf.extend(chunk)
-
-        out = bytes(self._buf[:size])
-        del self._buf[:size]
-        return out
+    @override
+    def flush(self) -> None:
+        """Nothing to drain: send() has already handed the data to the kernel."""
+        self._require_sock()
 
     def reset_input_buffer(self) -> None:
-        sock = self.ensure_opened()
-        self._buf.clear()
-        # Zero-timeout poll: recv() after a readable select() returns at once,
-        # so the socket timeout is never touched.
+        sock = self._require_sock()
+        # Zero-timeout poll: recv() after a readable select() returns at once.
         while select.select([sock], [], [], 0)[0]:
             if not sock.recv(4096):
                 break
 
     def reset_output_buffer(self) -> None:
+        self._require_sock()
+
+    # -- modem lines: RFCOMM has none, handled as in socket:// --------------
+    @override
+    def send_break(self, duration: float = 0.25) -> None:
+        self._require_sock()
+
+    def _update_break_state(self) -> None:
         pass
 
-    def flush(self) -> None:
+    def _update_rts_state(self) -> None:
         pass
 
+    def _update_dtr_state(self) -> None:
+        pass
 
+    @property
+    def cts(self) -> bool:
+        self._require_sock()
+        return True
+
+    @property
+    def dsr(self) -> bool:
+        self._require_sock()
+        return True
+
+    @property
+    def ri(self) -> bool:
+        self._require_sock()
+        return False
+
+    @property
+    def cd(self) -> bool:
+        self._require_sock()
+        return True
+
+    @override
+    def fileno(self) -> int:
+        return self._require_sock().fileno()

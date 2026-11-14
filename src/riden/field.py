@@ -82,7 +82,7 @@ class Field(Enum):
     PRESET = 19, 1, read_int, write_int
     # RD6012P current range: 0 is the 6 A range, otherwise 12 A.
     # Other models report 0.
-    I_RANGE = 20, 1, read_int, None
+    I_RANGE = 20, 1, read_flag, write_int
 
     BAT_EN = 32, 1, read_flag, None
     BAT_V = 33, 1, read_v, None
@@ -99,7 +99,7 @@ class Field(Enum):
     SECOND = 53, 1, read_int, write_int
 
     # Register 54 is a command register, not calibration data: writing 5377
-    # (0x1501) commits the calibration registers 55-62 to NVRAM.  It is not
+    # (0x1501) commits the calibration registers 55-64 to NVRAM.  It is not
     # readable because it carries no meaningful state.
     CAL_COMMIT = 54, 1, None, write_int
     CAL_V_ZERO = 55, 1, read_int, write_int
@@ -110,6 +110,12 @@ class Field(Enum):
     CAL_I_SCALE = 60, 1, read_int, write_int
     CAL_BI_ZERO = 61, 1, read_int, write_int
     CAL_BI_SCALE = 62, 1, read_int, write_int
+    # RD6012P only: a second output-current calibration pair for the 12 A
+    # range.  The vendor app reads registers 55-64 as one block and shows
+    # these two only for model code 60125; on other models read them but do
+    # not treat them as meaningful.
+    CAL_I12_ZERO = 63, 1, read_int, write_int
+    CAL_I12_SCALE = 64, 1, read_int, write_int
 
     TAKE_OK = 66, 1, read_flag, write_int
     TAKE_OUT = 67, 1, read_flag, write_int

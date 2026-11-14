@@ -6,10 +6,12 @@ from urllib.parse import parse_qs, urlsplit
 
 from .bt_serial import BtSerial, SecurityLevel
 
-# URL parameter name -> converter from its string value.
+# URL parameter name -> converter from its string value.  Only link settings
+# live in the URL.  The read/write timeout is a regular port setting, passed
+# as an argument like for any pyserial port:
+# serial_for_url("bt://...", timeout=1).
 _URL_PARAMS: dict[str, Callable[[str], typing.Any]] = {
     "channel": int,
-    "timeout": float,
     "connect_timeout": float,
     "security": lambda value: SecurityLevel[value.upper()],
 }

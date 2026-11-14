@@ -1,15 +1,28 @@
 import contextlib
+import logging
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Self, override
 
+import serial
+
 from .field import Field, RegRead, RegWrite, flatten_fields
 from .model import Model
-from .transport import Registers, Transport, build_transport
+from .transport import (
+    Delayed,
+    KeepAlive,
+    Logging,
+    Modbus,
+    Reconnectable,
+    Registers,
+    Transport,
+)
 from .transport.errors import is_link_error as default_is_link_error
-from .transport.modbus import Port
+from .transport.modbus import DEFAULT_BAUDRATE, DEFAULT_TIMEOUT
 from .transport.transport import Session, Tx
+
+log = logging.getLogger("riden")
 
 
 class Riden(AbstractContextManager["Riden"]):
@@ -54,40 +67,70 @@ class Riden(AbstractContextManager["Riden"]):
     @classmethod
     def connect(
         cls,
-        port: Port,
+        port: serial.SerialBase | str,
         address: int = 1,
         *,
+        baudrate: int = DEFAULT_BAUDRATE,
+        timeout: float | None = DEFAULT_TIMEOUT,
+        write_timeout: float | None = None,
         delay: float = 0.02,
         keepalive: float | None = None,
         retry_attempts: int = 1,
         retry_delay: float = 0.2,
         is_link_error: Callable[[BaseException], bool] = default_is_link_error,
+        logger: logging.Logger | None = log,
+        log_level: int = logging.DEBUG,
     ) -> Self:
-        """Return a client using the default transport stack.
+        """Return a client on the default transport stack.
 
-        The stack is Modbus -> Delayed -> KeepAlive -> Reconnectable.  Keyword
-        options (``delay``, ``keepalive``, ``retry_attempts``, ``retry_delay``,
-        ``is_link_error``) are documented in
-        :func:`riden.transport.build_transport`; ``keepalive=None`` (the default) disables
-        the idle pings.  A failed ping stops the pings for that session; the
-        next operation that proves the link works registers it again.
+        The stack is Modbus -> Logging -> Delayed -> KeepAlive -> Reconnectable.
+        Construction does no I/O; the returned client is opened by ``with``
+        or open().
+
+        ``baudrate``, ``timeout`` and ``write_timeout`` configure a port given
+        as a string (path or URL); a port object keeps its own settings.  A
+        port object is managed by the client: closing the client closes it,
+        and a reconnect reopens it, even if it was passed in open.  See
+        :class:`riden.transport.Modbus`.
+
+        ``delay`` is the pause between transactions (``0`` leaves Delayed out).
+
+        ``keepalive=None`` (the default) disables idle pings and the
+        background thread they need.  A failed ping stops the pings for that
+        session; the next operation that proves the link works registers it
+        again.  KeepAlive never heals anything: only a real operation
+        reconnects, because Reconnectable is outermost.
+
+        ``retry_attempts`` reconnects (``0`` leaves Reconnectable out), with
+        ``retry_delay`` seconds between them.  ``is_link_error`` is shared:
+        Reconnectable retries these errors, and KeepAlive does not stop
+        pinging on any other (logical) error.
+
+        Logging sits directly above Modbus, so it also sees keepalive pings
+        and reconnects.  ``logger`` defaults to the ``riden`` logger; ``None``
+        leaves logging out of the stack.
 
         Usage::
 
             with Riden.connect("bt://AA:BB:CC:DD:EE:FF?channel=1", 1) as rd:
                 print(rd.status())
         """
-        return cls(
-            build_transport(
-                port,
-                address,
-                delay=delay,
-                keepalive=keepalive,
-                retry_attempts=retry_attempts,
-                retry_delay=retry_delay,
-                is_link_error=is_link_error,
-            )
+        transport: Transport = Modbus(
+            port,
+            address,
+            baudrate=baudrate,
+            timeout=timeout,
+            write_timeout=write_timeout,
         )
+        if logger is not None:
+            transport = Logging(transport, logger, log_level)
+        if delay > 0:
+            transport = Delayed(transport, delay)
+        if keepalive is not None:
+            transport = KeepAlive(transport, keepalive, is_link_error)
+        if retry_attempts > 0:
+            transport = Reconnectable(transport, retry_attempts, retry_delay, is_link_error)
+        return cls(transport)
 
     def open(self) -> Self:
         if self.state is not None:

@@ -9,9 +9,9 @@ from collections.abc import Iterator
 from typing import Any, ClassVar, cast
 
 import pytest
+import serial
 
 from riden.transport import keepalive
-from riden.transport.modbus import Port
 from riden.transport.transport import Op, Registers, Tx
 
 # Register map of a fake RD6006P device, in raw register values.
@@ -57,9 +57,9 @@ class FakePort:
         self.is_open = False
 
 
-def as_port(port: FakePort) -> Port:
+def as_port(port: FakePort) -> serial.SerialBase:
     """Type-only bridge: the transport accepts anything pyserial-like."""
-    return cast(Port, port)
+    return cast(serial.SerialBase, port)
 
 
 class FakeInstrument:

@@ -5,7 +5,8 @@ from typing import Any, cast
 import pytest
 import serial
 
-from riden.transport.modbus import Modbus
+from riden.bt import BtSerial
+from riden.transport.modbus import DEFAULT_BAUDRATE, DEFAULT_TIMEOUT, Modbus
 from riden.transport.transport import Tx
 from tests.conftest import FakeInstrument, FakePort, as_port
 
@@ -62,7 +63,7 @@ def test_execute_after_close_fails(
         modbus.execute(Tx.read(0, 1))
 
 
-def test_close_closes_owned_port(fake_instrument: type[FakeInstrument]) -> None:
+def test_close_closes_port(fake_instrument: type[FakeInstrument]) -> None:
     port = FakePort()
     modbus = Modbus(as_port(port)).open()
     modbus.close()
@@ -83,7 +84,7 @@ def test_instrument_is_reused_across_open_close(
     assert port.opens == 2
 
 
-def test_external_open_port_is_not_owned(
+def test_external_open_port_is_closed(
     fake_instrument: type[FakeInstrument],
 ) -> None:
     port = FakePort()
@@ -91,18 +92,22 @@ def test_external_open_port_is_not_owned(
     modbus = Modbus(as_port(port)).open()
     modbus.close()
     assert port.opens == 1
-    assert port.closes == 0
-    assert port.is_open
+    assert port.closes == 1
+    assert not port.is_open
 
 
-def test_external_closed_port_is_owned(
+def test_external_open_port_is_reopened(
     fake_instrument: type[FakeInstrument],
 ) -> None:
+    # Reconnectable relies on this: a port passed in open is still reopened
+    # after close().
     port = FakePort()
+    port.open()
     modbus = Modbus(as_port(port)).open()
-    assert port.opens == 1
     modbus.close()
-    assert port.closes == 1
+    modbus.open()
+    assert port.opens == 2
+    assert port.is_open
 
 
 def test_port_open_failure_is_not_cleaned_up(
@@ -115,14 +120,15 @@ def test_port_open_failure_is_not_cleaned_up(
     assert port.closes == 0
 
 
-def test_instrument_failure_closes_owned_port(
+class Boom:
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("instrument boom")
+
+
+def test_instrument_failure_closes_port(
     fake_instrument: type[FakeInstrument],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class Boom:
-        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-            raise RuntimeError("instrument boom")
-
     port = FakePort()
     monkeypatch.setattr("minimalmodbus.Instrument", Boom)
     with pytest.raises(RuntimeError, match="instrument boom"):
@@ -132,16 +138,51 @@ def test_instrument_failure_closes_owned_port(
     assert not port.is_open
 
 
-def test_string_port_gets_baudrate_and_timeout() -> None:
+def test_instrument_failure_closes_external_open_port(
+    fake_instrument: type[FakeInstrument],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Modbus manages the port's lifetime, so a port passed in open is closed
+    # on failure too, although Modbus did not open it.
+    port = FakePort()
+    port.open()
+    monkeypatch.setattr("minimalmodbus.Instrument", Boom)
+    with pytest.raises(RuntimeError, match="instrument boom"):
+        Modbus(as_port(port)).open()
+    assert port.opens == 1
+    assert port.closes == 1
+    assert not port.is_open
+
+
+def test_string_port_gets_default_baudrate_and_timeout() -> None:
     # pyserial defaults (9600 baud, timeout=None) would block forever on a
     # silent device; a string path cannot carry these settings.
     modbus = Modbus("loop://")
     assert isinstance(modbus.port, serial.SerialBase)
-    assert modbus.port.baudrate == 115200
-    assert modbus.port.timeout == 1
+    assert modbus.port.baudrate == DEFAULT_BAUDRATE == 115200
+    assert modbus.port.timeout == DEFAULT_TIMEOUT
+    assert modbus.port.write_timeout is None
+
+
+def test_string_port_takes_baudrate_and_timeout() -> None:
+    modbus = Modbus("loop://", baudrate=9600, timeout=2, write_timeout=3)
+    port = modbus.port
+    assert (port.baudrate, port.timeout, port.write_timeout) == (9600, 2, 3)
+
+
+def test_bt_url_takes_baudrate_and_timeout() -> None:
+    import riden  # noqa: F401  (registers the bt:// handler)
+
+    modbus = Modbus(
+        "bt://AA:BB:CC:DD:EE:FF?channel=3", baudrate=9600, timeout=2, write_timeout=3
+    )
+    assert isinstance(modbus.port, BtSerial)
+    port = modbus.port
+    assert port.channel == 3
+    assert (port.baudrate, port.timeout, port.write_timeout) == (9600, 2, 3)
 
 
 def test_external_serial_keeps_its_settings() -> None:
     port = serial.serial_for_url("loop://", baudrate=9600, timeout=2, do_not_open=True)
-    modbus = Modbus(port)
+    modbus = Modbus(port, baudrate=57600, timeout=5)
     assert (modbus.port.baudrate, modbus.port.timeout) == (9600, 2)

@@ -12,7 +12,7 @@ If this fails while the 500-transaction read-only test passes, the problem is
 in the RK6012 Bluetooth/Modbus bridge or its power stage, not the USB dongle.
 
 Usage:
-    link_test.py "bt://E2:F9:C6:24:71:C8?channel=1&timeout=0.5"
+    link_test.py "bt://E2:F9:C6:24:71:C8?channel=1"
     link_test.py --cycles 30 --interval 0.5
 """
 import argparse
