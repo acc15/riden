@@ -6,6 +6,7 @@ writes.
 """
 
 from types import MappingProxyType
+from typing import Any, cast
 
 import pytest
 
@@ -119,6 +120,15 @@ def test_rd6012p_current_deps_are_aliased() -> None:
 def test_base_currents_have_no_dependencies() -> None:
     assert BASE[Field.I_SET].deps == {}
     assert BASE[Field.M1_I].dependencies == frozenset()
+
+
+def test_model_deps_are_read_only() -> None:
+    # The maps are built once by the factory and shipped; a stray assignment
+    # must not change how currents are scaled.
+    deps = RD6012P[Field.M1_I].deps
+    assert isinstance(deps, MappingProxyType)
+    with pytest.raises(TypeError):
+        cast(Any, deps)[Field.I_RANGE] = Field.I
 
 
 def test_make_deps_exposes_declared_fields_under_aliases() -> None:

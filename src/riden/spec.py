@@ -125,6 +125,10 @@ def riden_spec(
         raise ValueError("i_max and i_scale must have the same length")
     switched = len(i_maxes) > 1
 
+    def i_range(deps: Mapping[Field, Any]) -> int:
+        """Select the current range: 0 is the first, anything else the second."""
+        return 1 if switched and deps[Field.I_RANGE] else 0
+
     def read_v(r: Registers, _: Mapping[Field, Any]):
         return r[0] / v_scale
 
@@ -136,23 +140,17 @@ def riden_spec(
         """Over-voltage protection: the device accepts up to v_max + 2 V."""
         return (clamp(v_max, v_scale, v, 2),)
 
-    def range_index(deps: Mapping[Field, Any]) -> int:
-        """Select the current range: 0 is the first, anything else the second."""
-        if not switched:
-            return 0
-        return 1 if deps[Field.I_RANGE] else 0
-
     def read_i(r: Registers, deps: Mapping[Field, Any]):
-        return r[0] / i_scales[range_index(deps)]
+        return r[0] / i_scales[i_range(deps)]
 
     def write_i(v, deps: Mapping[Field, Any]) -> Registers:
         """Current setpoint: the device accepts up to i_max + 0.1 A."""
-        index = range_index(deps)
+        index = i_range(deps)
         return (clamp(i_maxes[index], i_scales[index], v, 0.1),)
 
     def write_ocp(v, deps: Mapping[Field, Any]) -> Registers:
         """Over-current protection: the device accepts up to i_max + 0.2 A."""
-        index = range_index(deps)
+        index = i_range(deps)
         return (clamp(i_maxes[index], i_scales[index], v, 0.2),)
 
     def read_p(r: Registers, deps: Mapping[Field, Any]):
@@ -170,7 +168,9 @@ def riden_spec(
         register to each preset, so their presets are five registers apart.
         """
         # The output and each preset scale current by their own range selector.
-        output_deps = {Field.I_RANGE: Field.I_RANGE} if switched else {}
+        # The maps are read-only, like the layout's register map, so a shipped
+        # map cannot be changed by accident.
+        output_deps = MappingProxyType({Field.I_RANGE: Field.I_RANGE} if switched else {})
         fields = {
             Field.ID: Register(0, 1, read_int),
             Field.SN: Register(1, 2, read_dw),
@@ -236,28 +236,18 @@ def riden_spec(
             base = 80 + stride * n
             # One current codec serves every preset: it asks for I_RANGE and
             # the map aliases it to this preset's own range register.
-            preset_deps = (
-                {Field.I_RANGE: Field(f"m{n}_i_range")} if switched else {}
-            )
+            preset_deps = MappingProxyType({Field.I_RANGE: Field(f"m{n}_i_range")} if switched else {})
             fields[Field(f"m{n}_v")] = Register(base, 1, read_v, write_v)
-            fields[Field(f"m{n}_i")] = Register(
-                base + 1, 1, read_i, write_i, deps=preset_deps
-            )
+            fields[Field(f"m{n}_i")] = Register(base + 1, 1, read_i, write_i, deps=preset_deps)
             fields[Field(f"m{n}_ovp")] = Register(base + 2, 1, read_v, write_ovp)
-            fields[Field(f"m{n}_ocp")] = Register(
-                base + 3, 1, read_i, write_ocp, deps=preset_deps
-            )
+            fields[Field(f"m{n}_ocp")] = Register(base + 3, 1, read_i, write_ocp, deps=preset_deps)
             if switched:
-                fields[Field(f"m{n}_i_range")] = Register(
-                    base + 4, 1, read_flag, write_int
-                )
+                fields[Field(f"m{n}_i_range")] = Register(base + 4, 1, read_flag, write_int)
             else:
                 # The model has no switchable range, but callers should not
                 # need a per-model code path: a zero-size field is virtual, so
                 # its codecs touch no register.
-                fields[Field(f"m{n}_i_range")] = Register(
-                    0, 0, read_off, write_off
-                )
+                fields[Field(f"m{n}_i_range")] = Register(0, 0, read_off, write_off)
 
         # A dependency the map cannot decode would otherwise fail at the first
         # read of that field; catch it when the map is built instead.
@@ -265,9 +255,7 @@ def riden_spec(
             unsupported = register.dependencies - fields.keys()
             if unsupported:
                 names = ", ".join(dep.value for dep in sorted(unsupported))
-                raise ValueError(
-                    f"field {field.value} depends on unsupported fields: {names}"
-                )
+                raise ValueError(f"field {field.value} depends on unsupported fields: {names}")
 
         return Layout(MappingProxyType(fields))
 

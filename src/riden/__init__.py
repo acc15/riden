@@ -3,6 +3,7 @@ import serial
 from .bt import BtSerial
 from .enums import Mode, Protection
 from .field import Field
+from .model import Model
 from .riden import Riden
 from .transport import Delayed, KeepAlive, Logging, Modbus, Reconnectable, Transport
 
@@ -19,6 +20,7 @@ __all__ = [
     "Logging",
     "Modbus",
     "Mode",
+    "Model",
     "Protection",
     "Reconnectable",
     "Riden",
