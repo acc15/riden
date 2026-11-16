@@ -174,11 +174,14 @@ def test_bt_url_takes_baudrate_and_timeout() -> None:
     import riden  # noqa: F401  (registers the bt:// handler)
 
     modbus = Modbus(
-        "bt://AA:BB:CC:DD:EE:FF?channel=3", baudrate=9600, timeout=2, write_timeout=3
+        "bt://AA:BB:CC:DD:EE:FF?connect_timeout=3",
+        baudrate=9600,
+        timeout=2,
+        write_timeout=3,
     )
     assert isinstance(modbus.port, BtSerial)
     port = modbus.port
-    assert port.channel == 3
+    assert port.connect_timeout == 3
     assert (port.baudrate, port.timeout, port.write_timeout) == (9600, 2, 3)
 
 

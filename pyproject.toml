@@ -1,7 +1,7 @@
 [project]
 name = "riden"
 version = "0.3.0"
-description = "Synchronous Python client for Riden RD60xx power supplies (USB serial and Bluetooth)"
+description = "Synchronous Python client for Riden RD60xx power supplies (USB serial and Bluetooth LE)"
 readme = "README.md"
 authors = [
     { name = "Vyacheslav Mayorov", email = "vyacheslav.mayorov@gmail.com" }
@@ -33,6 +33,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    "bleak>=3.1.0",
     "minimalmodbus>=2.1.1",
     "pyserial>=3.5",
 ]

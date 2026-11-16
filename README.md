@@ -1,30 +1,29 @@
 # riden
 
-A simple synchronous, single-threaded client for Riden laboratory power
-supplies (RD6006, RD6006P, RD6006-Max, RD6012, RD6012P, RD6012H, RD6018,
-RD6018P, RD6024, RD6030, RK6006, RK6006H, RK6012, RK6018, RK4206H, RK8009).
+A simple synchronous client for Riden laboratory power supplies (RD6006,
+RD6006P, RD6006-Max, RD6012, RD6012P, RD6012H, RD6018, RD6018P, RD6024,
+RD6030, RK6006, RK6006H, RK6012, RK6018, RK4206H, RK8009).
 
-It speaks Modbus RTU over a regular serial port or Bluetooth SPP (RFCOMM) on
-Linux.
+It speaks Modbus RTU over a regular serial port or Bluetooth Low Energy (BLE).
 
 ## Features
 
-- synchronous API with no background event loop:
-  `with Riden.connect(...) as rd: ...`;
-- Bluetooth on Linux via `bt://` URLs (`AF_BLUETOOTH` + RFCOMM);
+- synchronous API: `with Riden.connect(...) as rd: ...`; the caller never
+  sees an event loop, and the BLE transport keeps bleak's loop in a private
+  thread;
+- Bluetooth LE via `bt://` URLs on Linux, macOS and Windows (`bleak`);
 - batched I/O instead of one transaction per field: any set of fields is read
   in one Modbus transaction, and written in one transaction per contiguous
   register block;
 - automatic model detection and per-model voltage/current scaling, including
   the RD6012P switchable current range;
 - ready-made transport stack: transaction pacing, reconnect, logging, and
-  optional keepalive pings;
-- encrypted Bluetooth link by default, which keeps idle connections alive.
+  optional keepalive pings.
 
 ## Requirements
 
 - Python 3.14 or newer;
-- Linux with BlueZ for Bluetooth SPP;
+- Bluetooth LE via `bleak`: Linux with BlueZ, macOS, or Windows;
 - any OS supported by pyserial for USB serial.
 
 ## Install
@@ -52,7 +51,7 @@ uv sync
 ```python
 from riden import Riden
 
-with Riden.connect("bt://E2:F9:C6:24:71:C8?channel=1") as rd:
+with Riden.connect("bt://E1:F9:C6:24:71:C8") as rd:
     print(rd.status())
 
     # Several fields — a single device transaction.
@@ -64,6 +63,14 @@ with Riden.connect("bt://E2:F9:C6:24:71:C8?channel=1") as rd:
     rd.write(en=True)
 ```
 
+The address above is the BLE address, not the Classic SPP MAC. A device name
+also works, which is handy when the address is not known:
+
+```python
+with Riden.connect("bt://RK6006") as rd:
+    ...
+```
+
 For USB serial, pass the device path:
 
 ```python
@@ -71,7 +78,7 @@ with Riden.connect("/dev/ttyUSB0") as rd:
     ...
 ```
 
-The port is opened at 115200 baud, the factory setting. If the baud rate was
+For USB serial, the port is opened at 115200 baud, the factory setting. If the baud rate was
 changed in the device menu (9600, 19200, 38400, 57600), pass it explicitly.
 `timeout` is the read timeout in seconds (default `1.0`), `write_timeout` the
 write timeout (default `None`, writes block, as in pyserial):
@@ -81,7 +88,7 @@ with Riden.connect("/dev/ttyUSB0", baudrate=9600, timeout=0.5) as rd:
     ...
 ```
 
-RFCOMM has no baud rate, so for `bt://` the `baudrate` value only sets the
+BLE has no baud rate, so for `bt://` the `baudrate` value only sets the
 Modbus inter-frame timing.
 
 For any other port setting (parity, stop bits, flow control, ...), create the
@@ -106,7 +113,7 @@ a read forever on a silent device. Set both explicitly.
 The client takes over the port's lifetime: leaving `with` (or `close()`)
 closes it, and a reconnect reopens it, even if it was passed in already open.
 `do_not_open=True` is not required, but without it the port (for `bt://`, the
-Bluetooth connection) is opened immediately rather than by `with`.
+BLE connection) is opened immediately rather than by `with`.
 
 USB works only when the USB interface is selected in the device menu.
 
@@ -119,7 +126,7 @@ import time
 
 from riden import Riden
 
-with Riden.connect("bt://E2:F9:C6:24:71:C8?channel=1") as rd:
+with Riden.connect("bt://E1:F9:C6:24:71:C8") as rd:
     try:
         rd.write(v_set=0.0, i_set=0.1, en=True)
 
@@ -131,83 +138,59 @@ with Riden.connect("bt://E2:F9:C6:24:71:C8?channel=1") as rd:
         rd.write(v_set=0.0, en=False)
 ```
 
-## Bluetooth on Linux
+## Bluetooth LE
 
-Pair the device once before the first connection (the PIN is usually `1234`):
+The BLE transport uses `bleak` and works on Linux, macOS and Windows. The
+Riden module does not require pairing: power the supply on and connect. It
+advertises as `RK6006` (or the model name); on the tested RK6006/RK6012 the
+BLE address is the Classic SPP MAC minus one, but a device name or a BLE scan
+is more reliable.
 
-```sh
-bluetoothctl pair AA:BB:CC:DD:EE:FF
-```
-
-`bluetoothctl trust` is not required: it only affects connections managed by
-`bluetoothd` (auto-reconnect, incoming connections), not the RFCOMM socket
-this library opens.
+The `bt://` scheme is kept for compatibility; it now selects the BLE
+transport.
 
 URL format:
 
 ```text
-bt://AA:BB:CC:DD:EE:FF?channel=1&security=medium
+bt://ADDRESS_OR_NAME?connect_timeout=10
 ```
 
-| Parameter         | Default  | Meaning                                       |
-|-------------------|----------|-----------------------------------------------|
-| `channel`         | `1`      | RFCOMM channel, `1`..`30`                     |
-| `connect_timeout` | `10`     | connection timeout, seconds                   |
-| `security`        | `medium` | `low`, `medium`, `high`, `fips` (see below)   |
+| Parameter         | Default | Meaning                          |
+|-------------------|---------|----------------------------------|
+| `connect_timeout` | `10`    | scan and connect timeout, seconds |
 
 Only the parameters present in the URL are passed on; the defaults live in
 `BtSerial`. An unknown parameter or an invalid value raises `ValueError`.
+When several devices share the same name, pass the address instead.
 
 The URL holds only link settings. `timeout` (read) and `write_timeout` are
 regular port settings, passed as arguments, with pyserial semantics: `None`
 blocks, `0` does not block, a positive value is a deadline for the whole call.
 `Riden.connect("bt://...", timeout=0.5)` defaults to `1.0` s;
-`serial.serial_for_url("bt://...", timeout=0.5)` and `BtSerial(mac, timeout=0.5)`
+`serial.serial_for_url("bt://...", timeout=0.5)` and `BtSerial(address, timeout=0.5)`
 default to `None`, as pyserial does.
 `BtSerial` is registered as a pyserial URL handler, so `bt://` works anywhere a
 regular serial port is accepted.
 
-### Security level
-
-`security` sets the RFCOMM socket security level (`BT_SECURITY` in BlueZ),
-which the kernel enforces before the connection is used:
-
-| Level    | Requirement                                                     |
-|----------|-----------------------------------------------------------------|
-| `low`    | no authentication, no encryption                                |
-| `medium` | authenticated and encrypted link; any stored link key will do   |
-| `high`   | as `medium`, but the link key must be MITM-protected            |
-| `fips`   | Secure Connections only                                         |
-
-The default is `medium`. A plain Linux RFCOMM socket uses `low`, and with it
-the Bluetooth module of the Riden supply (tested on RK6012) drops the link
-after about 8–10 s without traffic: the next request fails with
-`TimeoutError: [Errno 110] Connection timed out`. In an HCI capture
-(`btmon`) this is `Disconnect Complete` with reason `Connection Timeout
-(0x08)`: the PSU stops answering at the radio level, while the host never
-asks to disconnect. With an encrypted link the same device stays connected
-while idle (verified for 60 s). The behaviour did not depend on the USB
-dongle (reproduced on Realtek and Broadcom controllers). Android apps are not
-affected because Android opens secure RFCOMM sockets by default.
-
-`medium` needs a paired device: the kernel authenticates with the stored link
-key, without any prompt. `high` usually fails with Riden supplies, because a
-key from legacy pairing with a 4-digit PIN is not considered MITM-protected.
-Use `security=low` only for a device that cannot be paired, and enable
-keepalive pings in that case:
+Some Riden Bluetooth modules drop an idle link. Enable keepalive pings if you
+keep the connection open without traffic:
 
 ```python
-with Riden.connect("bt://AA:BB:CC:DD:EE:FF?security=low", keepalive=5.0) as rd:
+with Riden.connect("bt://RK6006", keepalive=5.0) as rd:
     ...
 ```
 
-When constructing `BtSerial` directly, pass the enum:
+When constructing `BtSerial` directly:
 
 ```python
-from riden.bt import BtSerial, SecurityLevel
+from riden.bt import BtSerial
 
-port = BtSerial("AA:BB:CC:DD:EE:FF", security=SecurityLevel.LOW)
+port = BtSerial("E1:F9:C6:24:71:C8", timeout=0.5)
 ```
+
+`bleak` runs its asyncio loop in a private thread; the public API is the usual
+blocking pyserial one, so `minimalmodbus`, retries and keepalive work
+unchanged.
 
 ## RD6012P / RD6012PW current range
 
@@ -347,7 +330,7 @@ Scripts in `scripts/` are run through `uv run`:
 
 ```sh
 uv run scripts/v_sweep.py
-uv run scripts/link_test.py "bt://E2:F9:C6:24:71:C8?channel=1"
+uv run scripts/link_test.py "bt://E1:F9:C6:24:71:C8"
 ```
 
 `just --list` shows the remaining tasks.

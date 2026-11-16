@@ -1,6 +1,5 @@
-from .bt_serial import BtSerial, SecurityLevel
+from .bt_serial import BtSerial
 
 __all__ = [
     "BtSerial",
-    "SecurityLevel",
 ]

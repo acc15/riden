@@ -119,7 +119,7 @@ class Riden(AbstractContextManager["Riden"]):
 
         Usage::
 
-            with Riden.connect("bt://AA:BB:CC:DD:EE:FF?channel=1", 1) as rd:
+            with Riden.connect("bt://AA:BB:CC:DD:EE:FF", 1) as rd:
                 print(rd.status())
         """
         transport: Transport = Modbus(

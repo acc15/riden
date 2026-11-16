@@ -71,8 +71,8 @@ class Logging(Transport):
 
     ``logger`` is required; ``level`` defaults to ``logging.DEBUG``.  The
     logged target is ``str(inner session)``: Modbus describes the port or
-    MAC/channel plus the Modbus address, while any other session keeps its
-    default representation.
+    BLE address/name plus the Modbus address, while any other session keeps
+    its default representation.
     """
 
     def __init__(

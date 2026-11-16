@@ -13,7 +13,6 @@ from typing import Self, cast, override
 import minimalmodbus
 import serial
 
-from ..bt import BtSerial
 from .transport import Op, Registers, Session, Transport, Tx
 
 # Riden factory baud rate; the device menu also offers 9600..57600.
@@ -29,9 +28,9 @@ class Modbus(Transport, Session):
 
     ``baudrate``, ``timeout`` and ``write_timeout`` apply only to a port
     created here from a string; a port object passed in keeps its own
-    settings.  ``write_timeout=None`` (the pyserial default) blocks writes.  For bt://,
-    RFCOMM has no baud rate: ``baudrate`` only sets the Modbus inter-frame
-    timing.
+    settings.  ``write_timeout=None`` (the pyserial default) blocks writes.
+    For bt://, BLE has no baud rate: ``baudrate`` only sets the Modbus
+    inter-frame timing.
 
     A port object passed in is managed by Modbus: close() closes it and
     open() reopens it, even if it was already open when passed in.
@@ -70,8 +69,6 @@ class Modbus(Transport, Session):
     def __str__(self) -> str:
         port = self.port
         name = port.port if port.port is not None else "?"
-        if isinstance(port, BtSerial):
-            return f"{name}/{port.channel}@{self.address}"
         return f"{name}@{self.address}"
 
     @override

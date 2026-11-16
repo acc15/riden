@@ -4,7 +4,7 @@
 Usage:
     stress.py [count] [delay] [--url bt://...]
 
-The default URL points at the known RK6012.  The port is opened through
+The default URL points at the known RK6006.  The port is opened through
 pyserial's serial_for_url(), so any supported URL (bt://, /dev/ttyUSB0,
 socket://...) can be used.
 """

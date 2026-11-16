@@ -1,5 +1,5 @@
 #!/usr/bin/env .venv/bin/python
-"""Short read/write stability test for the RK6012 Bluetooth link.
+"""Short read/write stability test for a Riden Bluetooth LE link.
 
 Sequence:
   1. connect (retries, no controller power-cycle by default)
@@ -9,10 +9,10 @@ Sequence:
   5. always set 0 V and switch the output OFF
 
 If this fails while the 500-transaction read-only test passes, the problem is
-in the RK6012 Bluetooth/Modbus bridge or its power stage, not the USB dongle.
+in the Bluetooth/Modbus bridge or the power stage, not the USB dongle.
 
 Usage:
-    link_test.py "bt://E2:F9:C6:24:71:C8?channel=1"
+    link_test.py "bt://E1:F9:C6:24:71:C8"
     link_test.py --cycles 30 --interval 0.5
 """
 import argparse
@@ -22,7 +22,7 @@ from riden import Riden
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("port", type=str,
-               help="bt://MAC?channel=1... or a serial device")
+               help="bt://ADDRESS or a serial device")
 p.add_argument("--cycles", type=int, default=20, help="status reads with output ON")
 p.add_argument("--interval", type=float, default=0.5)
 p.add_argument("--voltage", type=float, default=5.0)
