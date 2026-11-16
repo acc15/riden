@@ -34,17 +34,12 @@ DEFAULT_BAUDRATE = 115200
 DEFAULT_TIMEOUT = 1
 DEFAULT_CONNECT_TIMEOUT = 10.0
 DEFAULT_DELAY = 0.02
+DEFAULT_RESPONSE_RETRY = AsyncRetrying(
+    retry=retry_if_exception_type(TimeoutError),
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(0.2),
+)
 BT_PREFIX = "bt://"
-
-
-def _response_retry() -> AsyncRetrying:
-    """Retry a lost response; tmodbus does not retry plain TimeoutError."""
-    return AsyncRetrying(
-        retry=retry_if_exception_type(TimeoutError),
-        stop=stop_after_attempt(3),
-        wait=wait_fixed(0.2),
-    )
-
 
 type ClientSource = str | ModbusClient | AsyncBaseTransport | BLEDevice
 
@@ -58,6 +53,7 @@ def make_client(
     connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
     delay: float = DEFAULT_DELAY,
     auto_reconnect: bool = True,
+    response_retry: AsyncRetrying | None = DEFAULT_RESPONSE_RETRY
 ) -> ModbusClient:
     """Return a configured client; construction performs no I/O.
 
@@ -96,11 +92,12 @@ def make_client(
     if not isinstance(port, AsyncBaseTransport):
         return port
 
-    port = AsyncSmartTransport(
-        port,
-        wait_between_requests=delay,
-        auto_reconnect=auto_reconnect,
-        response_retry_strategy=_response_retry(),
-    )
+    if response_retry is not None or delay > 0 or auto_reconnect:
+        port = AsyncSmartTransport(
+            port,
+            wait_between_requests=delay,
+            auto_reconnect=auto_reconnect,
+            response_retry_strategy=response_retry,
+        )
 
     return AsyncModbusClient(port, unit_id=address)

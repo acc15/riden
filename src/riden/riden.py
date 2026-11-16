@@ -1,14 +1,16 @@
 """Asynchronous client for Riden power supplies."""
-
 import contextlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Self, override
 
+from tenacity import AsyncRetrying
+
 from .connection import (
     DEFAULT_BAUDRATE,
     DEFAULT_CONNECT_TIMEOUT,
     DEFAULT_DELAY,
+    DEFAULT_RESPONSE_RETRY,
     DEFAULT_TIMEOUT,
     ClientSource,
     ModbusClient,
@@ -71,6 +73,7 @@ class Riden:
         connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
         delay: float = DEFAULT_DELAY,
         auto_reconnect: bool = True,
+        response_retry: AsyncRetrying | None = DEFAULT_RESPONSE_RETRY
     ) -> Self:
         """Return a client for a serial port or a Bluetooth LE URL.
 
@@ -97,6 +100,7 @@ class Riden:
             connect_timeout=connect_timeout,
             delay=delay,
             auto_reconnect=auto_reconnect,
+            response_retry=response_retry,
         )
         return cls(client)
 
