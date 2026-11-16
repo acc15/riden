@@ -16,53 +16,58 @@ Usage:
     link_test.py --cycles 30 --interval 0.5
 """
 import argparse
-import time
+import asyncio
 
 from riden import Riden
 
 p = argparse.ArgumentParser(description=__doc__)
-p.add_argument("port", type=str,
-               help="bt://ADDRESS or a serial device")
+p.add_argument("port", type=str, help="bt://ADDRESS or a serial device")
 p.add_argument("--cycles", type=int, default=20, help="status reads with output ON")
 p.add_argument("--interval", type=float, default=0.5)
 p.add_argument("--voltage", type=float, default=5.0)
 p.add_argument("--current", type=float, default=0.01)
 args = p.parse_args()
-ok_off = 0
-ok_on = 0
 
 
-with Riden.connect(args.port, delay=0.2, keepalive=None) as rd:
-    try:
-        print(rd.identity())
-        rd.write(i_set=args.current, v_set=args.voltage, en=False)
-
-        print(f"--- output OFF, {args.voltage:g} V / {args.current * 1e3:g} mA set ---")
-        for i in range(3):
-            print(rd.status())
-            ok_off += 1
-            time.sleep(args.interval)
-
-        rd.write(en=True)
-        print("--- output ON ---")
-        for i in range(args.cycles):
-            try:
-                rd.status()
-            except Exception as exc:  # noqa: BLE001 - report any link failure
-                print(f"[{i:03d}] FAIL: {type(exc).__name__}: {exc}")
-                break
-            ok_on += 1
-            if i % 5 == 0:
-                print(f"[{i:03d}] ok")
-            time.sleep(args.interval)
-    finally:
+async def main() -> None:
+    ok_off = 0
+    ok_on = 0
+    async with Riden.connect(args.port, delay=0.2) as rd:
         try:
-            rd.write(v_set=0, en=False)
-            print("cleanup: 0 V, output OFF")
-        except Exception as exc:  # noqa: BLE001 - report any cleanup failure
-            print(
-                f"WARNING: cleanup failed: {type(exc).__name__}: {exc}\n"
-                "WARNING: TURN THE RK6012 OUTPUT OFF MANUALLY"
-            )
+            print(await rd.identity())
+            await rd.write(i_set=args.current, v_set=args.voltage, en=False)
 
-print(f"status reads: OFF {ok_off}/3, ON {ok_on}/{args.cycles}")
+            print(
+                f"--- output OFF, {args.voltage:g} V / {args.current * 1e3:g} mA set ---"
+            )
+            for _ in range(3):
+                print(await rd.status())
+                ok_off += 1
+                await asyncio.sleep(args.interval)
+
+            await rd.write(en=True)
+            print("--- output ON ---")
+            for i in range(args.cycles):
+                try:
+                    await rd.status()
+                except Exception as exc:  # noqa: BLE001 - report any link failure
+                    print(f"[{i:03d}] FAIL: {type(exc).__name__}: {exc}")
+                    break
+                ok_on += 1
+                if i % 5 == 0:
+                    print(f"[{i:03d}] ok")
+                await asyncio.sleep(args.interval)
+        finally:
+            try:
+                await rd.write(v_set=0, en=False)
+                print("cleanup: 0 V, output OFF")
+            except Exception as exc:  # noqa: BLE001 - report any cleanup failure
+                print(
+                    f"WARNING: cleanup failed: {type(exc).__name__}: {exc}\n"
+                    "WARNING: TURN THE RK6012 OUTPUT OFF MANUALLY"
+                )
+
+    print(f"status reads: OFF {ok_off}/3, ON {ok_on}/{args.cycles}")
+
+
+asyncio.run(main())

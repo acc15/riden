@@ -2,7 +2,7 @@
 
 import logging
 
-DEFAULT_ADDRESS = "26:05:E9:A3:00:37"
+DEFAULT_ADDRESS = "E1:F9:C6:24:71:C8"
 DEFAULT_URL = f"bt://{DEFAULT_ADDRESS}"
 
 logging.basicConfig(

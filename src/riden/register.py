@@ -6,7 +6,8 @@ from types import MappingProxyType
 from typing import Any
 
 from .field import Field
-from .transport import Registers
+
+type Registers = tuple[int, ...]
 
 type RegRead = Callable[[Registers, Mapping[Field, Any]], Any]
 type RegWrite = Callable[[Any, Mapping[Field, Any]], Registers]

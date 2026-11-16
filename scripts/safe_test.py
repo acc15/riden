@@ -1,7 +1,8 @@
 #!/usr/bin/env .venv/bin/python
 """Safe low-voltage test: 5 V, 50 mA, output on for ~2 s, then off."""
+
 import argparse
-import time
+import asyncio
 
 import config
 
@@ -12,48 +13,52 @@ p.add_argument("--url", default=config.DEFAULT_URL)
 args = p.parse_args()
 
 
-with Riden.connect(args.url, delay=0.02, keepalive=None) as rd:
-    try:
-        print("=== before ===")
-        print(rd.status())
-        print(
-            "values:",
-            rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
-        )
-
-        rd.write(v_set=5.0, i_set=0.05)
-        time.sleep(0.5)
-        print("\n=== set 5.00 V / 0.050 A, output still off ===")
-        print(rd.status())
-        print(
-            "values:",
-            rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
-        )
-
-        rd.write(en=True)
-        time.sleep(1.0)
-        print("\n=== output ON ===")
-        print(rd.status())
-        print(
-            "values:",
-            rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
-        )
-
-        time.sleep(1.0)
-        print("\n=== output ON (second read) ===")
-        print(rd.status())
-    finally:
+async def main() -> None:
+    async with Riden.connect(args.url, delay=0.02) as rd:
         try:
-            rd.write(en=False, v_set=0.0)
-            time.sleep(0.3)
-            print("\n=== output OFF ===")
-            print(rd.status())
+            print("=== before ===")
+            print(await rd.status())
             print(
-            "values:",
-            rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
-        )
-        except Exception as exc:  # noqa: BLE001 - report any cleanup failure
-            print(
-                f"WARNING: cleanup failed: {type(exc).__name__}: {exc}\n"
-                "WARNING: TURN THE RIDEN OUTPUT OFF MANUALLY"
+                "values:",
+                await rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
             )
+
+            await rd.write(v_set=5.0, i_set=0.05)
+            await asyncio.sleep(0.5)
+            print("\n=== set 5.00 V / 0.050 A, output still off ===")
+            print(await rd.status())
+            print(
+                "values:",
+                await rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
+            )
+
+            await rd.write(en=True)
+            await asyncio.sleep(1.0)
+            print("\n=== output ON ===")
+            print(await rd.status())
+            print(
+                "values:",
+                await rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
+            )
+
+            await asyncio.sleep(1.0)
+            print("\n=== output ON (second read) ===")
+            print(await rd.status())
+        finally:
+            try:
+                await rd.write(en=False, v_set=0.0)
+                await asyncio.sleep(0.3)
+                print("\n=== output OFF ===")
+                print(await rd.status())
+                print(
+                    "values:",
+                    await rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
+                )
+            except Exception as exc:  # noqa: BLE001 - report any cleanup failure
+                print(
+                    f"WARNING: cleanup failed: {type(exc).__name__}: {exc}\n"
+                    "WARNING: TURN THE RIDEN OUTPUT OFF MANUALLY"
+                )
+
+
+asyncio.run(main())

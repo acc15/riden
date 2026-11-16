@@ -1,30 +1,30 @@
 # riden
 
-A simple synchronous client for Riden laboratory power supplies (RD6006,
-RD6006P, RD6006-Max, RD6012, RD6012P, RD6012H, RD6018, RD6018P, RD6024,
-RD6030, RK6006, RK6006H, RK6012, RK6018, RK4206H, RK8009).
+An asynchronous client for Riden laboratory power supplies (RD6006, RD6006P,
+RD6006-Max, RD6012, RD6012P, RD6012H, RD6018, RD6018P, RD6024, RD6030, RK6006,
+RK6006H, RK6012, RK6018, RK4206H, RK8009).
 
 It speaks Modbus RTU over a regular serial port or Bluetooth Low Energy (BLE).
 
 ## Features
 
-- synchronous API: `with Riden.connect(...) as rd: ...`; the caller never
-  sees an event loop, and the BLE transport keeps bleak's loop in a private
-  thread;
+- asyncio API: `async with Riden.connect(...) as rd: ...`;
 - Bluetooth LE via `bt://` URLs on Linux, macOS and Windows (`bleak`);
+- Modbus RTU through `tmodbus`, including CRC/framing, timeouts and automatic
+  reconnect;
 - batched I/O instead of one transaction per field: any set of fields is read
   in one Modbus transaction, and written in one transaction per contiguous
   register block;
 - automatic model detection and per-model voltage/current scaling, including
-  the RD6012P switchable current range;
-- ready-made transport stack: transaction pacing, reconnect, logging, and
-  optional keepalive pings.
+  the RD6012P switchable current range.
 
 ## Requirements
 
 - Python 3.14 or newer;
-- Bluetooth LE via `bleak`: Linux with BlueZ, macOS, or Windows;
-- any OS supported by pyserial for USB serial.
+- `tmodbus[async-serial]` for Modbus RTU (installed automatically);
+- `bleak` for Bluetooth LE (installed automatically);
+- Linux with BlueZ, macOS, or Windows for BLE; any OS supported by `serialx`
+  for USB serial.
 
 ## Install
 
@@ -49,148 +49,176 @@ uv sync
 ## Quick start
 
 ```python
+import asyncio
+
 from riden import Riden
 
-with Riden.connect("bt://E1:F9:C6:24:71:C8") as rd:
-    print(rd.status())
 
-    # Several fields — a single device transaction.
-    v, i, p = rd.read("v", "i", "p").values()
-    print(v, i, p)
+async def main() -> None:
+    async with Riden.connect("bt://E1:F9:C6:24:71:C8") as rd:
+        print(await rd.status())
 
-    # Adjacent registers — a single write transaction.
-    rd.write(v_set=5.0, i_set=0.1)
-    rd.write(en=True)
+        # Several fields — a single device transaction.
+        v, i, p = (await rd.read("v", "i", "p")).values()
+        print(v, i, p)
+
+        # Adjacent registers — a single write transaction.
+        await rd.write(v_set=5.0, i_set=0.1)
+        await rd.write(en=True)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-The address above is the BLE address, not the Classic SPP MAC. A device name
-also works, which is handy when the address is not known:
-
-```python
-with Riden.connect("bt://RK6006") as rd:
-    ...
-```
+The address above is the BLE address, not the Classic SPP MAC. All Riden
+modules advertise under the same name (`RK6006`), so the URL takes an address;
+a device name cannot tell several supplies apart.
 
 For USB serial, pass the device path:
 
 ```python
-with Riden.connect("/dev/ttyUSB0") as rd:
+async with Riden.connect("/dev/ttyUSB0") as rd:
     ...
 ```
 
-For USB serial, the port is opened at 115200 baud, the factory setting. If the baud rate was
-changed in the device menu (9600, 19200, 38400, 57600), pass it explicitly.
-`timeout` is the read timeout in seconds (default `1.0`), `write_timeout` the
-write timeout (default `None`, writes block, as in pyserial):
+The USB port is opened at 115200 baud, the factory setting. If the baud rate
+was changed in the device menu (9600, 19200, 38400, 57600), pass it
+explicitly. `timeout` is the Modbus response timeout in seconds (default
+`1.0`), and `delay` is the pause between transactions (default `0.02`):
 
 ```python
-with Riden.connect("/dev/ttyUSB0", baudrate=9600, timeout=0.5) as rd:
+async with Riden.connect("/dev/ttyUSB0", baudrate=9600, timeout=0.5) as rd:
     ...
 ```
 
-BLE has no baud rate, so for `bt://` the `baudrate` value only sets the
-Modbus inter-frame timing.
+BLE has no baud rate; `baudrate` applies only to serial ports. The BLE
+connection timeout is the `connect_timeout` argument of `Riden.connect`.
 
-For any other port setting (parity, stop bits, flow control, ...), create the
-port with pyserial and pass the object:
+`auto_reconnect` (default `True`) enables tmodbus's automatic reconnect.
+Set it to `False` for a strict one-shot session.
 
-```python
-import serial
-
-port = serial.serial_for_url(
-    "/dev/ttyUSB0", baudrate=115200, parity=serial.PARITY_EVEN, timeout=1.0,
-    do_not_open=True,
-)
-with Riden.connect(port) as rd:
-    ...
-```
-
-`baudrate`, `timeout` and `write_timeout` apply only when the library creates
-the port from a string. A port object keeps its own settings, so pyserial
-defaults apply to anything not set: 9600 baud and `timeout=None`, which blocks
-a read forever on a silent device. Set both explicitly.
-
-The client takes over the port's lifetime: leaving `with` (or `close()`)
-closes it, and a reconnect reopens it, even if it was passed in already open.
-`do_not_open=True` is not required, but without it the port (for `bt://`, the
-BLE connection) is opened immediately rather than by `with`.
+Construction parses the URL and builds the tmodbus client without I/O.
+`async with` connects and reads the identity; a failed open closes the client
+again. `close()` is idempotent.
 
 USB works only when the USB interface is selected in the device menu.
 
 Field names are case-insensitive, so `"V"` and `"v"` refer to the same field.
 
-## Example: voltage sweep + status
+## Several supplies in one loop
+
+All clients share the caller's asyncio loop; no threads are involved:
 
 ```python
-import time
+import asyncio
 
 from riden import Riden
 
-with Riden.connect("bt://E1:F9:C6:24:71:C8") as rd:
-    try:
-        rd.write(v_set=0.0, i_set=0.1, en=True)
 
-        for voltage in range(0, 60, 5):
-            rd.write(v_set=float(voltage))
-            time.sleep(2)
-            print(rd.status())
+async def main() -> None:
+    async with (
+        Riden.connect("bt://<MAC1>") as master,
+        Riden.connect("bt://<MAC2>") as follower1,
+        Riden.connect("bt://<MAC3>") as follower2,
+    ):
+        while True:
+            values = await master.read("v", "i")
+            v, i = values["v"], values["i"]
+
+            await asyncio.gather(
+                follower1.write({"v_set": v, "i_set": i}),
+                follower2.write({"v_set": v, "i_set": i}),
+            )
+            await asyncio.sleep(2)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+`async with` opens the clients sequentially, which also avoids BlueZ's
+`InProgress` error from simultaneous discoveries. To connect several supplies
+in parallel, scan once and pass the discovered `BLEDevice` objects directly:
+
+```python
+import asyncio
+
+from bleak import BleakScanner
+from riden import Riden
+
+MAC1, MAC2, MAC3 = "E1:F9:C6:24:71:C8", "26:05:E9:A3:00:37", "AA:BB:CC:DD:EE:FF"
+
+
+async def main() -> None:
+    found = await BleakScanner.discover(timeout=5, return_adv=True)
+    devices = [
+        device for address, (device, _adv) in found.items()
+        if address in {MAC1, MAC2, MAC3}
+    ]
+
+    rds = [Riden.connect(device) for device in devices]
+    await asyncio.gather(*(rd.open() for rd in rds))
+    try:
+        ...
     finally:
-        rd.write(v_set=0.0, en=False)
+        await asyncio.gather(*(rd.close() for rd in rds))
+
+
+asyncio.run(main())
+```
+
+`BleTransport` is still exported for custom UUIDs or timeouts; `Riden.connect`
+accepts a prebuilt transport as well.
+
+## Example: voltage sweep + status
+
+```python
+import asyncio
+
+from riden import Riden
+
+
+async def main() -> None:
+    async with Riden.connect("bt://E1:F9:C6:24:71:C8") as rd:
+        try:
+            await rd.write(v_set=0.0, i_set=0.1, en=True)
+
+            for voltage in range(0, 60, 5):
+                await rd.write(v_set=float(voltage))
+                await asyncio.sleep(2)
+                print(await rd.status())
+        finally:
+            await rd.write(v_set=0.0, en=False)
+
+
+asyncio.run(main())
 ```
 
 ## Bluetooth LE
 
 The BLE transport uses `bleak` and works on Linux, macOS and Windows. The
-Riden module does not require pairing: power the supply on and connect. It
-advertises as `RK6006` (or the model name); on the tested RK6006/RK6012 the
-BLE address is the Classic SPP MAC minus one, but a device name or a BLE scan
-is more reliable.
+Riden module does not require pairing: power the supply on and connect. All
+modules advertise as `RK6006`, so use the BLE address, not the name. On the
+tested RK6006/RK6012 the BLE address is the Classic SPP MAC minus one; a BLE
+scan (`bluetoothctl`, `BleakScanner`) shows the exact address. On macOS the
+BLE address is a CoreBluetooth UUID rather than a MAC.
 
-The `bt://` scheme is kept for compatibility; it now selects the BLE
-transport.
-
-URL format:
-
-```text
-bt://ADDRESS_OR_NAME?connect_timeout=10
-```
-
-| Parameter         | Default | Meaning                          |
-|-------------------|---------|----------------------------------|
-| `connect_timeout` | `10`    | scan and connect timeout, seconds |
-
-Only the parameters present in the URL are passed on; the defaults live in
-`BtSerial`. An unknown parameter or an invalid value raises `ValueError`.
-When several devices share the same name, pass the address instead.
-
-The URL holds only link settings. `timeout` (read) and `write_timeout` are
-regular port settings, passed as arguments, with pyserial semantics: `None`
-blocks, `0` does not block, a positive value is a deadline for the whole call.
-`Riden.connect("bt://...", timeout=0.5)` defaults to `1.0` s;
-`serial.serial_for_url("bt://...", timeout=0.5)` and `BtSerial(address, timeout=0.5)`
-default to `None`, as pyserial does.
-`BtSerial` is registered as a pyserial URL handler, so `bt://` works anywhere a
-regular serial port is accepted.
-
-Some Riden Bluetooth modules drop an idle link. Enable keepalive pings if you
-keep the connection open without traffic:
+The `bt://` scheme is accepted. Everything after `://` is passed to bleak as the BLE address; there is no URL query parsing:
 
 ```python
-with Riden.connect("bt://RK6006", keepalive=5.0) as rd:
+async with Riden.connect(
+    "bt://E1:F9:C6:24:71:C8", connect_timeout=5
+) as rd:
     ...
 ```
 
-When constructing `BtSerial` directly:
+`timeout`, `delay` and `connect_timeout` are regular arguments of
+`Riden.connect`, as with any other port.
 
-```python
-from riden.bt import BtSerial
-
-port = BtSerial("E1:F9:C6:24:71:C8", timeout=0.5)
-```
-
-`bleak` runs its asyncio loop in a private thread; the public API is the usual
-blocking pyserial one, so `minimalmodbus`, retries and keepalive work
-unchanged.
+No keepalive is needed: both tested Riden BLE modules keep an idle link for at
+least a minute. If a particular adapter drops an idle link, tmodbus's
+automatic reconnect opens it again on the next transaction.
 
 ## RD6012P / RD6012PW current range
 
@@ -204,7 +232,7 @@ Reading a current also reads the range, in the same transaction:
 
 ```python
 # I (11) and I_RANGE (20): one read, registers 11-20
-i = rd.read("i")["i"]
+i = (await rd.read("i"))["i"]
 ```
 
 A write needs the range to encode the current, so the range is read first
@@ -214,10 +242,10 @@ current:
 
 ```python
 # 1 read of I_RANGE, then 1 write of I_SET
-rd.write(i_set=0.5)
+await rd.write(i_set=0.5)
 
 # No reads: I_RANGE is written first, then I_SET
-rd.write(i_set=0.5, i_range=0)
+await rd.write(i_set=0.5, i_range=0)
 ```
 
 Every preset M0..M9 has its own range register, so a preset takes five
@@ -235,7 +263,7 @@ preset is still one transaction and needs no reads:
 
 ```python
 # One write of five registers starting at 85
-rd.write(m1_v=5.0, m1_i=1.0, m1_ovp=60.0, m1_ocp=1.0, m1_i_range=0)
+await rd.write(m1_v=5.0, m1_i=1.0, m1_ovp=60.0, m1_ocp=1.0, m1_i_range=0)
 ```
 
 On models without a selectable range, `M0_I_RANGE`..`M9_I_RANGE` are virtual:
@@ -262,10 +290,10 @@ registers between them, then decodes the fields:
 
 ```python
 # V (10), I (11), P (12-13): 1 transaction, registers 10-13
-v, i, p = rd.read("v", "i", "p").values()
+v, i, p = (await rd.read("v", "i", "p")).values()
 
 # V_SET (8) and EN (18): still 1 transaction, but registers 8-18 (11 registers)
-rd.read("v_set", "en")
+await rd.read("v_set", "en")
 ```
 
 Fields far apart make that one transaction longer, so grouping nearby fields
@@ -280,11 +308,11 @@ is used as-is.
 
 ```python
 # V_SET (8) and I_SET (9) are adjacent: 1 transaction
-rd.write(v_set=5.0, i_set=0.1)
+await rd.write(v_set=5.0, i_set=0.1)
 
 # V_SET (8), I_SET (9) and EN (18): 2 transactions,
 # registers 8-9, then register 18
-rd.write(v_set=5.0, i_set=0.1, en=True)
+await rd.write(v_set=5.0, i_set=0.1, en=True)
 ```
 
 Since every value is validated before the first transaction, an invalid value

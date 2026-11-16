@@ -1,20 +1,16 @@
 """Shared fakes for the Riden test suite.
 
-The real transport stack talks to a serial port and a minimalmodbus
-Instrument.  Both are replaced here by small in-memory objects, so the tests
+A small in-memory tmodbus client replaces the network transport, so tests
 never touch a device or a socket.
 """
 
-from collections.abc import Iterator, Mapping
-from typing import Any, ClassVar, cast
-
-import pytest
-import serial
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import Enum, auto
+from typing import Any
 
 from riden.field import Field
-from riden.register import Register, RegRead, RegWrite
-from riden.transport import keepalive
-from riden.transport.transport import Op, Registers, Tx
+from riden.register import Register, Registers, RegRead, RegWrite
 
 # Register map of a fake RD6006P device, in raw register values.
 BASE_REGISTERS = 128
@@ -38,151 +34,66 @@ def make_registers() -> list[int]:
     return regs
 
 
-class FakePort:
-    """pyserial-like port that records open/close calls."""
-
-    def __init__(self) -> None:
-        self.port: str | None = "fake"
-        self.is_open = False
-        self.opens = 0
-        self.closes = 0
-        self.open_error: BaseException | None = None
-
-    def open(self) -> None:
-        if self.open_error is not None:
-            raise self.open_error
-        self.opens += 1
-        self.is_open = True
-
-    def close(self) -> None:
-        self.closes += 1
-        self.is_open = False
+class Op(Enum):
+    READ = auto()
+    WRITE = auto()
 
 
-def as_port(port: FakePort) -> serial.SerialBase:
-    """Type-only bridge: the transport accepts anything pyserial-like."""
-    return cast(serial.SerialBase, port)
+@dataclass(frozen=True, slots=True)
+class Tx:
+    """One recorded transaction, for assertions."""
+
+    op: Op
+    start: int
+    count: int = 0
+    data: Registers = ()
+
+    @classmethod
+    def read(cls, start: int, count: int) -> Tx:
+        return cls(Op.READ, start, count)
+
+    @classmethod
+    def write(cls, start: int, data: Registers | list[int]) -> Tx:
+        values = tuple(data)
+        return cls(Op.WRITE, start, len(values), values)
 
 
-class FakeInstrument:
-    """Register file standing in for minimalmodbus.Instrument."""
-
-    instances: ClassVar[list[FakeInstrument]] = []
-
-    def __init__(
-        self,
-        port: object,
-        slaveaddress: int,
-        mode: str | None = None,
-        close_port_after_each_call: bool = False,
-        debug: bool = False,
-    ) -> None:
-        self.port = port
-        self.address = slaveaddress
-        self.mode = mode
-        self.debug = debug
-        self.clear_buffers_before_each_transaction = False
-        self.registers = make_registers()
-        self.transactions: list[Tx] = []
-        FakeInstrument.instances.append(self)
-
-    def read_registers(
-        self, registeraddress: int, number_of_registers: int, functioncode: int = 3
-    ) -> list[int]:
-        self.transactions.append(Tx.read(registeraddress, number_of_registers))
-        return self.registers[
-            registeraddress:registeraddress + number_of_registers
-        ]
-
-    def write_registers(self, registeraddress: int, values: list[int]) -> None:
-        self.transactions.append(Tx.write(registeraddress, values))
-        self.registers[
-            registeraddress:registeraddress + len(values)
-        ] = values
-
-
-@pytest.fixture
-def fake_instrument(monkeypatch: pytest.MonkeyPatch) -> type[FakeInstrument]:
-    """Replace minimalmodbus.Instrument with the in-memory fake."""
-    FakeInstrument.instances = []
-    monkeypatch.setattr("minimalmodbus.Instrument", FakeInstrument)
-    return FakeInstrument
-
-
-@pytest.fixture(autouse=True)
-def no_keepalive_thread(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Keep the global keepalive scheduler synchronous and empty."""
-    keepalive._scheduler._deadlines.clear()
-    monkeypatch.setattr(
-        keepalive._scheduler, "_ensure_thread_locked", lambda: None
-    )
-    yield
-    keepalive._scheduler._deadlines.clear()
-
-
-class MemorySession:
-    """Session backed by a register list, for testing Riden itself."""
+class FakeClient:
+    """In-memory stand-in for tmodbus's AsyncModbusClient."""
 
     def __init__(self, registers: list[int] | None = None) -> None:
         self.registers = make_registers() if registers is None else list(registers)
         self.transactions: list[Tx] = []
+        self.connected = False
         self.closed = False
+        self.connect_error: BaseException | None = None
         self.fail_with: BaseException | None = None
 
-    def execute(self, tx: Tx) -> Registers:
-        if self.fail_with is not None:
-            raise self.fail_with
-        self.transactions.append(tx)
-        if tx.op is Op.READ:
-            return tuple(self.registers[tx.start:tx.start + tx.count])
-        self.registers[tx.start:tx.start + len(tx.data)] = tx.data
-        return ()
+    async def connect(self) -> None:
+        if self.connect_error is not None:
+            raise self.connect_error
+        self.connected = True
 
-    def close(self) -> None:
+    async def disconnect(self) -> None:
+        self.connected = False
         self.closed = True
 
-
-class MemoryTransport:
-    """Transport that hands out one MemorySession."""
-
-    def __init__(self, session: MemorySession | None = None) -> None:
-        self.session = MemorySession() if session is None else session
-        self.opens = 0
-
-    def open(self) -> MemorySession:
-        self.opens += 1
-        return self.session
-
-
-class RecordingSession:
-    """Session that records transactions and returns canned data."""
-
-    def __init__(self, result: Registers | None = None) -> None:
-        self.result = () if result is None else result
-        self.transactions: list[Tx] = []
-        self.closed = False
-        self.fail_with: BaseException | None = None
-
-    def execute(self, tx: Tx) -> Registers:
-        self.transactions.append(tx)
+    async def read_holding_registers(
+        self, start_address: int, quantity: int
+    ) -> list[int]:
         if self.fail_with is not None:
             raise self.fail_with
-        return self.result
+        self.transactions.append(Tx.read(start_address, quantity))
+        return self.registers[start_address:start_address + quantity]
 
-    def close(self) -> None:
-        self.closed = True
-
-
-class RecordingTransport:
-    """Transport that hands out one RecordingSession."""
-
-    def __init__(self, session: RecordingSession | None = None) -> None:
-        self.session = RecordingSession() if session is None else session
-        self.opens = 0
-
-    def open(self) -> RecordingSession:
-        self.opens += 1
-        return self.session
+    async def write_multiple_registers(
+        self, start_address: int, values: list[int]
+    ) -> int:
+        if self.fail_with is not None:
+            raise self.fail_with
+        self.transactions.append(Tx.write(start_address, values))
+        self.registers[start_address:start_address + len(values)] = values
+        return len(values)
 
 
 def any_value(value: object) -> Any:

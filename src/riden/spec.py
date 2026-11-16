@@ -18,8 +18,7 @@ from typing import Any
 from .enums import Mode, Protection
 from .field import Field
 from .layout import Layout
-from .register import Register
-from .transport import Registers
+from .register import Register, Registers
 
 
 def clamp(maximum: float, scale: int, v: float, off: float) -> int:

@@ -7,8 +7,7 @@ from graphlib import CycleError, TopologicalSorter
 from types import MappingProxyType
 
 from .field import Field
-from .register import Register
-from .transport import Registers
+from .register import Register, Registers
 
 
 def _ordered[Node](
@@ -90,8 +89,8 @@ class Layout:
         Virtual fields have size 0 and do not widen the span.  When every
         field is virtual the request needs no transaction at all, so ``None``
         is returned.  The client reads everything in one transaction.  A span
-        over the protocol limit is not checked here: minimalmodbus already
-        caps a read at 125 registers and a write at 123, and reports the error
+        over the protocol limit is not checked here: Modbus caps a read at
+        125 registers and a write at 123, and tmodbus reports the error
         itself.
         """
         spans = [
