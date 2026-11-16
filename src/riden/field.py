@@ -1,193 +1,127 @@
-from collections.abc import Callable, Iterable
-from enum import Enum
+from collections.abc import Iterable, Mapping
+from enum import StrEnum, auto
 from typing import Any, override
 
-from .enums import Mode, Protection
-from .model import Spec
-from .transport import Registers
 
-type RegRead = Callable[[Registers, Spec], Any]
-type RegWrite = Callable[[Any, Spec], Registers]
+class Field(StrEnum):
+    """Names of fields exposed by Riden devices.
 
-def read_flag(r: Registers, _: Spec):
-    return bool(r[0])
+    The enum only names fields.  Which register a field uses, how many
+    registers it occupies and how it is encoded belongs to the model's
+    :class:`riden.spec.Spec`.
+    """
 
-def read_int(r: Registers, _: Spec):
-    return r[0]
+    ID = auto()
+    SN = auto()
+    FW = auto()
+    TEMP_C = auto()
+    TEMP_F = auto()
+    V_SET = auto()
+    I_SET = auto()
+    V = auto()
+    I = auto()
+    P = auto()
+    V_IN = auto()
+    LOCK = auto()
+    PROTECTION = auto()
+    MODE = auto()
+    EN = auto()
+    PRESET = auto()
+    I_RANGE = auto()
 
-def write_int(v, _: Spec) -> Registers:
-    return (int(v),)
+    BAT_EN = auto()
+    BAT_V = auto()
+    EXT_TEMP_C = auto()
+    EXT_TEMP_F = auto()
+    AH = auto()
+    WH = auto()
 
-def read_protection(r: Registers, _: Spec):
-    return Protection(r[0])
+    YEAR = auto()
+    MONTH = auto()
+    DAY = auto()
+    HOUR = auto()
+    MINUTE = auto()
+    SECOND = auto()
 
-def read_mode(r: Registers, _: Spec):
-    return Mode(r[0])
+    CAL_COMMIT = auto()
+    CAL_V_ZERO = auto()
+    CAL_V_SCALE = auto()
+    CAL_BV_ZERO = auto()
+    CAL_BV_SCALE = auto()
+    CAL_I_ZERO = auto()
+    CAL_I_SCALE = auto()
+    CAL_BI_ZERO = auto()
+    CAL_BI_SCALE = auto()
+    CAL_I12_ZERO = auto()
+    CAL_I12_SCALE = auto()
 
-def read_dw(r: Registers, _: Spec):
-    return r[0] << 16 | r[1]
+    TAKE_OK = auto()
+    TAKE_OUT = auto()
+    BOOT_EN = auto()
+    VOLUME = auto()
+    LOGO = auto()
+    LANG = auto()
+    BACKLIGHT = auto()
 
-def read_centi(r: Registers, _: Spec):
-    """One register in hundredths: firmware version, input voltage."""
-    return r[0] / 100
+    M0_V = auto()
+    M0_I = auto()
+    M0_OVP = auto()
+    M0_OCP = auto()
+    M0_I_RANGE = auto()
 
-def read_milli_dw(r: Registers, s: Spec):
-    """Two registers in thousandths: Ah, Wh."""
-    return read_dw(r, s) / 1000
+    M1_V = auto()
+    M1_I = auto()
+    M1_OVP = auto()
+    M1_OCP = auto()
+    M1_I_RANGE = auto()
 
-def read_temp(r: Registers, _: Spec):
-    return (-1 if r[0] else 1) * r[1]
+    M2_V = auto()
+    M2_I = auto()
+    M2_OVP = auto()
+    M2_OCP = auto()
+    M2_I_RANGE = auto()
 
-def read_v(r: Registers, s: Spec):
-    return r[0] / s.v_scale
+    M3_V = auto()
+    M3_I = auto()
+    M3_OVP = auto()
+    M3_OCP = auto()
+    M3_I_RANGE = auto()
 
-def write_v(v, s: Spec) -> Registers:
-    """Voltage setpoint: the device accepts up to v_max + 1 V."""
-    return (s.v_clamp(v, 1),)
+    M4_V = auto()
+    M4_I = auto()
+    M4_OVP = auto()
+    M4_OCP = auto()
+    M4_I_RANGE = auto()
 
-def write_ovp(v, s: Spec) -> Registers:
-    """Over-voltage protection: the device accepts up to v_max + 2 V."""
-    return (s.v_clamp(v, 2),)
+    M5_V = auto()
+    M5_I = auto()
+    M5_OVP = auto()
+    M5_OCP = auto()
+    M5_I_RANGE = auto()
 
-def read_i(r: Registers, s: Spec):
-    return r[0] / s.i_scale
+    M6_V = auto()
+    M6_I = auto()
+    M6_OVP = auto()
+    M6_OCP = auto()
+    M6_I_RANGE = auto()
 
-def write_i(v, s: Spec) -> Registers:
-    """Current setpoint: the device accepts up to i_max + 0.1 A."""
-    return (s.i_clamp(v, 0.1),)
+    M7_V = auto()
+    M7_I = auto()
+    M7_OVP = auto()
+    M7_OCP = auto()
+    M7_I_RANGE = auto()
 
-def write_ocp(v, s: Spec) -> Registers:
-    """Over-current protection: the device accepts up to i_max + 0.2 A."""
-    return (s.i_clamp(v, 0.2),)
+    M8_V = auto()
+    M8_I = auto()
+    M8_OVP = auto()
+    M8_OCP = auto()
+    M8_I_RANGE = auto()
 
-def read_p(r: Registers, s: Spec):
-    return read_dw(r, s) / s.p_scale
-
-class Field(Enum):
-    ID = 0, 1, read_int, None
-    SN = 1, 2, read_dw, None
-    FW = 3, 1, read_centi, None
-    TEMP_C = 4, 2, read_temp, None
-    TEMP_F = 6, 2, read_temp, None
-    V_SET = 8, 1, read_v, write_v
-    I_SET = 9, 1, read_i, write_i
-    V = 10, 1, read_v, None
-    I = 11, 1, read_i, None
-    P = 12, 2, read_p, None
-    V_IN = 14, 1, read_centi, None
-    LOCK = 15, 1, read_flag, write_int
-    PROTECTION = 16, 1, read_protection, None
-    MODE = 17, 1, read_mode, None
-    EN = 18, 1, read_flag, write_int
-    PRESET = 19, 1, read_int, write_int
-    # RD6012P current range: 0 is the 6 A range, otherwise 12 A.
-    # Other models report 0.
-    I_RANGE = 20, 1, read_flag, write_int
-
-    BAT_EN = 32, 1, read_flag, None
-    BAT_V = 33, 1, read_v, None
-    EXT_TEMP_C = 34, 2, read_temp, None
-    EXT_TEMP_F = 36, 2, read_temp, None
-    AH = 38, 2, read_milli_dw, None
-    WH = 40, 2, read_milli_dw, None
-
-    YEAR = 48, 1, read_int, write_int
-    MONTH = 49, 1, read_int, write_int
-    DAY = 50, 1, read_int, write_int
-    HOUR = 51, 1, read_int, write_int
-    MINUTE = 52, 1, read_int, write_int
-    SECOND = 53, 1, read_int, write_int
-
-    # Register 54 is a command register, not calibration data: writing 5377
-    # (0x1501) commits the calibration registers 55-64 to NVRAM.  It is not
-    # readable because it carries no meaningful state.
-    CAL_COMMIT = 54, 1, None, write_int
-    CAL_V_ZERO = 55, 1, read_int, write_int
-    CAL_V_SCALE = 56, 1, read_int, write_int
-    CAL_BV_ZERO = 57, 1, read_int, write_int
-    CAL_BV_SCALE = 58, 1, read_int, write_int
-    CAL_I_ZERO = 59, 1, read_int, write_int
-    CAL_I_SCALE = 60, 1, read_int, write_int
-    CAL_BI_ZERO = 61, 1, read_int, write_int
-    CAL_BI_SCALE = 62, 1, read_int, write_int
-    # RD6012P only: a second output-current calibration pair for the 12 A
-    # range.  The vendor app reads registers 55-64 as one block and shows
-    # these two only for model code 60125; on other models read them but do
-    # not treat them as meaningful.
-    CAL_I12_ZERO = 63, 1, read_int, write_int
-    CAL_I12_SCALE = 64, 1, read_int, write_int
-
-    TAKE_OK = 66, 1, read_flag, write_int
-    TAKE_OUT = 67, 1, read_flag, write_int
-    BOOT_EN = 68, 1, read_flag, write_int
-    VOLUME = 69, 1, read_flag, write_int
-    LOGO = 70, 1, read_flag, write_int
-    LANG = 71, 1, read_int, write_int
-    BACKLIGHT = 72, 1, read_int, write_int
-
-    M0_V = 80, 1, read_v, write_v
-    M0_I = 81, 1, read_i, write_i
-    M0_OVP = 82, 1, read_v, write_ovp
-    M0_OCP = 83, 1, read_i, write_ocp
-
-    M1_V = 84, 1, read_v, write_v
-    M1_I = 85, 1, read_i, write_i
-    M1_OVP = 86, 1, read_v, write_ovp
-    M1_OCP = 87, 1, read_i, write_ocp
-
-    M2_V = 88, 1, read_v, write_v
-    M2_I = 89, 1, read_i, write_i
-    M2_OVP = 90, 1, read_v, write_ovp
-    M2_OCP = 91, 1, read_i, write_ocp
-
-    M3_V = 92, 1, read_v, write_v
-    M3_I = 93, 1, read_i, write_i
-    M3_OVP = 94, 1, read_v, write_ovp
-    M3_OCP = 95, 1, read_i, write_ocp
-
-    M4_V = 96, 1, read_v, write_v
-    M4_I = 97, 1, read_i, write_i
-    M4_OVP = 98, 1, read_v, write_ovp
-    M4_OCP = 99, 1, read_i, write_ocp
-
-    M5_V = 100, 1, read_v, write_v
-    M5_I = 101, 1, read_i, write_i
-    M5_OVP = 102, 1, read_v, write_ovp
-    M5_OCP = 103, 1, read_i, write_ocp
-
-    M6_V = 104, 1, read_v, write_v
-    M6_I = 105, 1, read_i, write_i
-    M6_OVP = 106, 1, read_v, write_ovp
-    M6_OCP = 107, 1, read_i, write_ocp
-
-    M7_V = 108, 1, read_v, write_v
-    M7_I = 109, 1, read_i, write_i
-    M7_OVP = 110, 1, read_v, write_ovp
-    M7_OCP = 111, 1, read_i, write_ocp
-
-    M8_V = 112, 1, read_v, write_v
-    M8_I = 113, 1, read_i, write_i
-    M8_OVP = 114, 1, read_v, write_ovp
-    M8_OCP = 115, 1, read_i, write_ocp
-
-    M9_V = 116, 1, read_v, write_v
-    M9_I = 117, 1, read_i, write_i
-    M9_OVP = 118, 1, read_v, write_ovp
-    M9_OCP = 119, 1, read_i, write_ocp
-
-    addr: int
-    count: int
-    read: RegRead | None
-    write: RegWrite | None
-
-    def __new__(cls, addr: int, count: int, read: RegRead | None, write: RegWrite | None):
-        obj = object.__new__(cls)
-        obj._value_ = addr
-        obj.addr = addr
-        obj.count = count
-        obj.read = read
-        obj.write = write
-        return obj
+    M9_V = auto()
+    M9_I = auto()
+    M9_OVP = auto()
+    M9_OCP = auto()
+    M9_I_RANGE = auto()
 
     @override
     @classmethod
@@ -196,26 +130,25 @@ class Field(Enum):
             return cls.__members__.get(value.upper())
         return None
 
-    @property
-    def label(self) -> str:
-        return self.name.lower()
 
-    @override
-    def __str__(self) -> str:
-        return self.label
-
-    @property
-    def is_readable(self):
-        return self.read is not None
-
-    @property
-    def is_writable(self):
-        return self.write is not None
-
-
-def flatten_fields(fields: Iterable[str | Field | Iterable[str | Field]]):
+def flatten_fields(fields: Iterable[str | Iterable[str]]):
     for field in fields:
         match field:
             case Field(): yield field
             case str(): yield Field(field)
             case _: yield from flatten_fields(field)
+
+
+def merge_fields(
+    *mappings: Mapping[str, Any] | Mapping[Field, Any],
+) -> dict[Field, Any]:
+    """Merge field mappings into one, normalizing keys to :class:`Field`.
+
+    Later mappings override earlier ones.  ``Riden.write`` relies on that
+    order: the values it is called with, then its keyword arguments.
+    """
+    merged: dict[Field, Any] = {}
+    for mapping in mappings:
+        for field, value in mapping.items():
+            merged[Field(field)] = value
+    return merged

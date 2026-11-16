@@ -1,5 +1,7 @@
 """Tests for the Riden client on top of a fake session."""
 
+from typing import Any
+
 import pytest
 
 from riden.field import Field
@@ -23,9 +25,11 @@ def test_open_reads_identity_in_one_transaction(
     transport: MemoryTransport, session: MemorySession
 ) -> None:
     rd = Riden(transport).open()
-    assert rd.require_state() == Riden.State(
-        session=session, id=60065, sn=7, fw=12.34, model=Model.RD6006P
+    state = rd.require_state()
+    assert (state.session, state.id, state.sn, state.fw, state.model) == (
+        session, 60065, 7, 12.34, Model.RD6006P
     )
+    assert set(state.layout.registers) == set(Field)
     assert [tx for tx in session.transactions] == [Tx.read(0, 4)]
 
 
@@ -38,7 +42,9 @@ def test_open_is_idempotent(transport: MemoryTransport) -> None:
 
 def test_read_single_field(transport: MemoryTransport) -> None:
     with Riden(transport) as rd:
-        assert rd.read(Field.V_SET) == {Field.V_SET: 12.5}
+        values = rd.read(Field.V_SET)
+    assert values == {"v_set": 12.5}
+    assert values[Field.V_SET] == 12.5
 
 
 def test_read_uses_one_contiguous_transaction(
@@ -92,8 +98,10 @@ def test_read_empty_generator_does_no_io(
 
 def test_read_all_readable_fields_via_generator(transport: MemoryTransport) -> None:
     with Riden(transport) as rd:
-        values = rd.read(f for f in Field if f.is_readable)
-    assert list(values) == [f for f in Field if f.is_readable]
+        layout = rd.require_state().layout
+        readable = [field for field in Field if layout.registers[field].read is not None]
+        values = rd.read(field for field in readable)
+    assert list(values) == readable
 
 
 def test_read_deduplicates_fields(transport: MemoryTransport) -> None:
@@ -126,6 +134,24 @@ def test_write_merges_adjacent_fields(
     with Riden(transport) as rd:
         rd.write({Field.V_SET: 12.5, Field.I_SET: 1.0})
     assert session.transactions[-1] == Tx.write(8, [12500, 10000])
+
+
+def test_write_accepts_field_keyed_mapping(
+    transport: MemoryTransport, session: MemorySession
+) -> None:
+    # A Field-keyed dict keeps the keys checked by the type checker.
+    values: dict[Field, Any] = {Field.V_SET: 12.5}
+    with Riden(transport) as rd:
+        rd.write(values)
+    assert session.registers[8] == 12500
+
+
+def test_write_kwargs_override_mappings(
+    transport: MemoryTransport, session: MemorySession
+) -> None:
+    with Riden(transport) as rd:
+        rd.write({Field.V_SET: 5.0}, v_set=12.5)
+    assert session.registers[8] == 12500
 
 
 def test_write_separate_fields_use_separate_blocks(
@@ -252,8 +278,7 @@ def test_context_manager_closes_session(
 def test_identity(transport: MemoryTransport) -> None:
     with Riden(transport) as rd:
         assert rd.identity() == (
-            "model=Model.RD6006P type=60065 sn=00000007 fw=12.34 "
-            "input=24.00V vscale=1000 iscale=10000"
+            "model=Model.RD6006P type=60065 sn=00000007 fw=12.34 input=24.00V"
         )
 
 
@@ -264,3 +289,101 @@ def test_status(transport: MemoryTransport) -> None:
     assert "set:      12.500 V, 1.000 A" in status
     assert "output:   12.000 V, 0.500 A, 60.000 W" in status
     assert "enabled:  True" in status
+
+
+# RD6012P: current is scaled by the selected range, per output and per preset.
+
+
+def rd6012p() -> tuple[Riden, MemorySession]:
+    """Return an opened RD6012P client on a zeroed register file."""
+    session = MemorySession([0] * 160)
+    session.registers[0] = 60125
+    rd = Riden(MemoryTransport(session)).open()
+    session.transactions.clear()
+    return rd, session
+
+
+def test_rd6012p_read_uses_selected_range() -> None:
+    rd, session = rd6012p()
+    session.registers[11] = 1234
+
+    session.registers[20] = 0
+    assert rd.read(Field.I)[Field.I] == pytest.approx(0.1234)
+
+    session.registers[20] = 1
+    assert rd.read(Field.I)[Field.I] == pytest.approx(1.234)
+
+
+def test_rd6012p_read_returns_only_requested_fields() -> None:
+    rd, session = rd6012p()
+    session.registers[11] = 5000  # I = 0.5 A in the 6 A range
+    session.registers[20] = 0
+
+    values = rd.read("i")
+
+    # I_RANGE is read as a dependency to scale I, but is not returned.
+    assert session.transactions == [Tx.read(11, 10)]
+    assert list(values) == [Field.I]
+    assert values["i"] == pytest.approx(0.5)
+    assert values[Field.I] == pytest.approx(0.5)
+
+
+def test_rd6012p_reads_range_and_current_in_one_transaction() -> None:
+    rd, session = rd6012p()
+    rd.read(Field.I)
+    assert session.transactions == [Tx.read(11, 10)]
+
+
+def test_rd6012p_write_reads_missing_range_first() -> None:
+    rd, session = rd6012p()
+    rd.write(i_set=1.0)
+    assert session.transactions == [Tx.read(20, 1), Tx.write(9, [10000])]
+
+
+def test_rd6012p_write_uses_supplied_range_without_reading() -> None:
+    rd, session = rd6012p()
+    rd.write(i_set=1.0, i_range=1)
+    assert session.transactions == [Tx.write(20, [1]), Tx.write(9, [1000])]
+
+
+def test_rd6012p_full_preset_is_one_transaction() -> None:
+    rd, session = rd6012p()
+    rd.write(m1_v=1, m1_i=1, m1_ovp=60, m1_ocp=5, m1_i_range=0)
+    assert session.transactions == [Tx.write(85, [1000, 10000, 60000, 50000, 0])]
+
+
+def test_rd6012p_preset_reads_its_own_range() -> None:
+    rd, session = rd6012p()
+    rd.write(m1_i=1.0)
+    assert session.transactions == [Tx.read(89, 1), Tx.write(86, [10000])]
+
+
+def test_rd6012p_rejects_value_invalid_for_measured_range_before_writing() -> None:
+    rd, session = rd6012p()
+    session.registers[20] = 0
+    with pytest.raises(ValueError, match="out of range 0..6.1"):
+        rd.write(i_set=12.0)
+    assert [tx for tx in session.transactions if tx.op is Op.WRITE] == []
+
+
+# Virtual fields on models without a selectable current range.
+
+
+def test_base_preset_range_is_virtual(
+    transport: MemoryTransport, session: MemorySession
+) -> None:
+    with Riden(transport) as rd:
+        before = list(session.transactions)
+        assert rd.read(Field.M1_I_RANGE) == {Field.M1_I_RANGE: False}
+        assert session.transactions == before
+
+        rd.write(m1_i_range=1)
+        assert [tx for tx in session.transactions if tx.op is Op.WRITE] == []
+
+
+def test_base_preset_ignores_virtual_range(
+    transport: MemoryTransport, session: MemorySession
+) -> None:
+    with Riden(transport) as rd:
+        rd.write(m1_i=1.0, m1_i_range=1)
+    assert session.transactions[-1] == Tx.write(85, [10000])

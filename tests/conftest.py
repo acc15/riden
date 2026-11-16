@@ -5,12 +5,14 @@ Instrument.  Both are replaced here by small in-memory objects, so the tests
 never touch a device or a socket.
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import Any, ClassVar, cast
 
 import pytest
 import serial
 
+from riden.field import Field
+from riden.register import Register, RegRead, RegWrite
 from riden.transport import keepalive
 from riden.transport.transport import Op, Registers, Tx
 
@@ -186,3 +188,17 @@ class RecordingTransport:
 def any_value(value: object) -> Any:
     """Escape hatch for intentionally invalid runtime values in tests."""
     return value
+
+
+def reader(layout: Mapping[Field, Register], field: Field) -> RegRead:
+    """Return a field's read codec, failing the test if it has none."""
+    read = layout[field].read
+    assert read is not None
+    return read
+
+
+def writer(layout: Mapping[Field, Register], field: Field) -> RegWrite:
+    """Return a field's write codec, failing the test if it has none."""
+    write = layout[field].write
+    assert write is not None
+    return write

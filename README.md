@@ -15,7 +15,8 @@ Linux.
 - batched I/O instead of one transaction per field: any set of fields is read
   in one Modbus transaction, and written in one transaction per contiguous
   register block;
-- automatic model and voltage/current scale detection on connect;
+- automatic model detection and per-model voltage/current scaling, including
+  the RD6012P switchable current range;
 - ready-made transport stack: transaction pacing, reconnect, logging, and
   optional keepalive pings;
 - encrypted Bluetooth link by default, which keeps idle connections alive.
@@ -212,33 +213,60 @@ port = BtSerial("AA:BB:CC:DD:EE:FF", security=SecurityLevel.LOW)
 
 These models have two current ranges, switched on the front panel: 6 A with
 0.1 mA resolution and 12 A with 1 mA resolution. The selected range is
-reported in register 20 (`Field.I_RANGE`: `0` is 6 A, otherwise 12 A).
+reported in register 20 (`Field.I_RANGE`: `0` is 6 A, otherwise 12 A), and
+the library scales every output current by the range that is actually
+selected: `10000` for 6 A, `1000` for 12 A.
 
-The library currently always uses the 12 A range scale for RD6012P
-(`i_scale=1000`, `i_max=12`). On the 6 A range, currents are therefore read
-and written 10 times off. `I_RANGE` can be read, but it is not used for
-scaling.
+Reading a current also reads the range, in the same transaction:
+
+```python
+# I (11) and I_RANGE (20): one read, registers 11-20
+i = rd.read("i")["i"]
+```
+
+A write needs the range to encode the current, so the range is read first
+and then the setpoint is written. If the caller supplies `i_range`, it is
+used as-is, nothing is read, and the range register is written before the
+current:
+
+```python
+# 1 read of I_RANGE, then 1 write of I_SET
+rd.write(i_set=0.5)
+
+# No reads: I_RANGE is written first, then I_SET
+rd.write(i_set=0.5, i_range=0)
+```
+
+Every preset M0..M9 has its own range register, so a preset takes five
+registers instead of four (V, I, OVP, OCP, I_RANGE):
+
+| Preset | V   | I   | OVP | OCP | I_RANGE |
+|--------|-----|-----|-----|-----|---------|
+| M0     | 80  | 81  | 82  | 83  | 84      |
+| M1     | 85  | 86  | 87  | 88  | 89      |
+| ...    |     |     |     |     |         |
+| M9     | 125 | 126 | 127 | 128 | 129     |
+
+`M*_I` and `M*_OCP` are scaled by their own `M*_I_RANGE`, so a complete
+preset is still one transaction and needs no reads:
+
+```python
+# One write of five registers starting at 85
+rd.write(m1_v=5.0, m1_i=1.0, m1_ovp=60.0, m1_ocp=1.0, m1_i_range=0)
+```
+
+On models without a selectable range, `M0_I_RANGE`..`M9_I_RANGE` are virtual:
+reading them returns `False`, and writing them is accepted but changes
+nothing. `I_RANGE` is a real register on all models; models without a range
+switch report `0`.
 
 The 12 A range also has its own output-current calibration pair,
 `Field.CAL_I12_ZERO` / `Field.CAL_I12_SCALE` (registers 63 and 64).
 
-This is deliberate: without a real device, any range handling would be a
-guess. Open questions:
-
-- **Can the range be changed over Modbus**, by writing register 20, or only
-  from the front panel?
-- **How do stored currents follow a range switch?** For example, set
-  `I_SET` to 0.0005 A on the 6 A range, then switch to 12 A, where the
-  resolution is 1 mA: does the device cut `I_SET` to 0 A, round it, or
-  rescale the raw value? For `I_SET` this is a minor issue, but presets
-  (`M1_I`, `M1_OCP`, ...) store currents as part of the preset. If they
-  change on a range switch, that is surprising, and the library has to know
-  exactly how.
-- **Which scale do the preset registers use?** The range of the moment, or
-  the range that was active when the preset was saved?
-
-A register dump from an RD6012P before and after a range switch (registers
-0–20 and 80–119) would answer most of these.
+One thing is not verified on hardware: whether the device rescales currents
+already stored in a preset when the front-panel range changes. The library
+always writes a preset's currents together with its range register, so a
+freshly written preset is consistent.
 
 ## Performance
 
@@ -263,7 +291,9 @@ is preferable.
 **`write()` uses one transaction per contiguous block.** It encodes and
 validates all values first, then merges fields whose registers follow each
 other without a gap into one block. Every gap starts a new block and a new
-transaction:
+transaction. A value scaled by another field needs that field first: a missing
+dependency is read in one transaction, while a dependency passed by the caller
+is used as-is.
 
 ```python
 # V_SET (8) and I_SET (9) are adjacent: 1 transaction

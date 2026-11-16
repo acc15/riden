@@ -1,14 +1,16 @@
 import contextlib
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Self, override
 
 import serial
 
-from .field import Field, RegRead, RegWrite, flatten_fields
+from .field import Field, flatten_fields, merge_fields
+from .layout import Layout
 from .model import Model
+from .register import RegRead, RegWrite
 from .transport import (
     Delayed,
     KeepAlive,
@@ -46,13 +48,18 @@ class Riden(AbstractContextManager["Riden"]):
 
     @dataclass(frozen=True, slots=True)
     class State:
-        """Identity of the connected device, read once by open()."""
+        """Identity of the connected device and its register map.
+
+        ``layout`` is built once by open() from the model's layout and is
+        read-only: a connected client uses exactly one map.
+        """
 
         session: Session
         id: int
         sn: int
         fw: float
         model: Model
+        layout: Layout
 
     def __init__(self, transport: Transport):
         self.transport = transport
@@ -140,12 +147,14 @@ class Riden(AbstractContextManager["Riden"]):
         try:
             # Identification is I/O, so it belongs to open(), not __init__.
             values = session.execute(Tx.read(0, 4))
+            model = Model.find(values[0])
             self.state = Riden.State(
                 session=session,
                 id=values[0],
                 sn=values[1] << 16 | values[2],
                 fw=values[3] / 100.0,
-                model=Model.find(values[0]),
+                model=model,
+                layout=model.value.layout(),
             )
         except BaseException:
             # The transport owns the session; close exactly what open() returned.
@@ -156,102 +165,135 @@ class Riden(AbstractContextManager["Riden"]):
             raise
         return self
 
-    def read(self, *fields: str | Field | Iterable[str | Field]) -> dict[Field, Any]:
+    def read(self, *fields: str | Iterable[str]) -> dict[str, Any]:
+        """Return the requested fields, keyed by name.
 
+        Fields that are only needed to decode another one are read but are not
+        part of the result, so a request for one field returns exactly it.
+        """
         state = self.require_state()
+        layout = state.layout
 
         # dict.fromkeys() flattens, normalizes and deduplicates in one pass,
         # while preserving the requested order.
-        selected: dict[Field, Any] = dict.fromkeys(flatten_fields(fields))
-        if not selected:
+        requested = list(dict.fromkeys(flatten_fields(fields)))
+        if not requested:
             return {}
 
-        # Validate and collect readers in one pass.  This both reports all
-        # unreadable fields before any I/O and narrows away the optional
-        # `None` in Field.read for the type checker.
+        # Dependencies are decoded before their dependents; unsupported
+        # fields and cycles fail here, before any I/O.
+        order = layout.dependency_order(requested)
+
+        # Validate and collect readers in one pass.  This reports all
+        # unreadable fields before I/O and narrows away the optional ``None``
+        # in Register.read for the type checker.  Dependencies are validated
+        # too: an unreadable dependency breaks the whole request.
         readers: dict[Field, RegRead] = {}
         not_readable: list[str] = []
-        for field in selected:
-            if field.read is None:
-                not_readable.append(field.label)
+        for field in order:
+            read = layout.registers[field].read
+            if read is None:
+                not_readable.append(field.value)
             else:
-                readers[field] = field.read
-
+                readers[field] = read
         if not_readable:
             raise ValueError(f"fields are not readable: {', '.join(not_readable)}")
 
-        start = min(field.addr for field in selected)
-        end = max(field.addr + field.count for field in selected)
-        
-        regs = state.session.execute(Tx.read(start, end - start))
-        for field, reader in readers.items():
-            offset = field.addr - start
-            raw = regs[offset:offset + field.count]
-            selected[field] = reader(raw, state.model.value)
-        return selected
+        span = layout.register_span(order)
+        regs: Registers = ()
+        start = 0
+        if span is not None:
+            start, count = span
+            regs = state.session.execute(Tx.read(start, count))
 
-    def write(self, *values: dict[str | Field, Any], **fields: Any) -> None:
-        
+        # Each codec gets only the fields it declared in deps, never the
+        # whole decoded map.  Keys are field names, so the result is already
+        # in the shape the public API returns.
+        values: dict[str, Any] = {}
+        for field in order:
+            register = layout.registers[field]
+            if register.size == 0:
+                raw: Registers = ()
+            else:
+                index = register.addr - start
+                raw = regs[index:index + register.size]
+            values[field.value] = readers[field](raw, register.make_deps(values))
+
+        # Dependencies are not part of the result: only what was requested.
+        return {field.value: values[field.value] for field in requested}
+
+    def write(
+        self,
+        *values: Mapping[str, Any] | Mapping[Field, Any],
+        **fields: Any,
+    ) -> None:
         state = self.require_state()
+        layout = state.layout
 
-        updates: dict[Field, Any] = {}
-        for mapping in values:
-            for field, value in mapping.items():
-                updates[Field(field)] = value
-        for field, value in fields.items():
-            updates[Field(field)] = value
-
+        updates = merge_fields(*values, fields)
         if not updates:
             return
 
         # Validate and collect writers in one pass, exactly like read().
-        # All unwritable fields are reported before any encoding or I/O.
+        # All unsupported and unwritable fields are reported before any I/O.
         writers: dict[Field, RegWrite] = {}
+        unsupported: list[str] = []
         not_writable: list[str] = []
         for field in updates:
-            if field.write is None:
-                not_writable.append(field.label)
+            register = layout.registers.get(field)
+            if register is None:
+                unsupported.append(field.value)
+            elif register.write is None:
+                not_writable.append(field.value)
             else:
-                writers[field] = field.write
+                writers[field] = register.write
 
+        if unsupported:
+            raise ValueError(f"fields are not supported: {', '.join(unsupported)}")
         if not_writable:
             raise ValueError(f"fields are not writable: {', '.join(not_writable)}")
 
+        # A codec is encoded with the fields it declares in deps.  What the
+        # caller supplied is used as-is; everything else is read first, in one
+        # transaction, together with its own transitive dependencies.
+        missing = layout.dependency_order(updates, supplied=updates.keys())
+        dependencies = self.read(*missing) if missing else {}
+
         # Encode and validate everything before touching the bus, so an invalid
         # value does not leave the device partially updated.
+        # Reads are keyed by name and updates by Field; Field is a str
+        # subclass, so the merged map answers both kinds of lookup.
+        values_by_field: dict[str, Any] = {**dependencies, **updates}
         encoded: dict[Field, Registers] = {}
         for field, value in updates.items():
+            register = layout.registers[field]
             try:
-                regs = writers[field](value, state.model.value)
+                regs = writers[field](value, register.make_deps(values_by_field))
             except ValueError as exc:
-                raise ValueError(f"field {field.label}: {exc}") from exc
-            if len(regs) != field.count:
-                raise ValueError(f"field {field.label} produced {len(regs)} registers, expected {field.count}")
+                raise ValueError(f"field {field.value}: {exc}") from exc
+            if len(regs) != register.size:
+                raise ValueError(
+                    f"field {field.value} produced {len(regs)} registers, "
+                    f"expected {register.size}"
+                )
             if any(reg < 0 or reg > 0xFFFF for reg in regs):
-                raise ValueError(f"field {field.label} produced out-of-range registers: {regs}")
+                raise ValueError(f"field {field.value} produced out-of-range registers: {regs}")
+            if register.size == 0:
+                # A virtual field validated its value but has no registers to
+                # send.
+                continue
             encoded[field] = regs
 
-        # Merge fields into contiguous blocks; Modbus cannot write sparse
-        # register lists in one transaction.  Blocks stay mutable while
-        # merging and are converted to tuples only when sent to the session.
-        blocks: list[tuple[int, list[int]]] = []
-        for field, regs in sorted(encoded.items(), key=lambda item: item[0].addr):
-            if blocks:
-                block_start, block_regs = blocks[-1]
-                offset = field.addr - block_start
-                if offset <= len(block_regs):
-                    block_regs[offset:offset + len(regs)] = regs
-                    continue
-            blocks.append((field.addr, list(regs)))
-
-        for start, regs in blocks:
-            state.session.execute(Tx.write(start, tuple(regs)))
+        # Adjacent registers share one transaction; a block that another block
+        # depends on is written first.
+        for start, regs in layout.write_blocks(encoded):
+            state.session.execute(Tx.write(start, regs))
 
     def _identity(self, v_in: float) -> str:
         state = self.require_state()
         return (
             f"model={state.model} type={state.id} sn={state.sn:08X} fw={state.fw:.2f} "
-            f"input={v_in:.2f}V vscale={state.model.value.v_scale} iscale={state.model.value.i_scale}"
+            f"input={v_in:.2f}V"
         )
 
     def identity(self) -> str:

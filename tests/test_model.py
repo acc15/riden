@@ -1,8 +1,12 @@
-"""Tests for the model table and its clamps."""
+"""Tests for the model table and the scaling each model uses."""
 
 import pytest
 
+from riden.field import Field
 from riden.model import Model
+from tests.conftest import reader, writer
+
+RANGE_6A = {Field.I_RANGE: 0}
 
 
 @pytest.mark.parametrize(
@@ -83,7 +87,8 @@ def test_find_rejects_unknown_code() -> None:
         (Model.RD6006P, 1000, 10000, 1000, 60, 6),
         (Model.RD6006_MAX, 100, 1000, 100, 60, 6),
         (Model.RD6012, 100, 100, 100, 60, 12),
-        (Model.RD6012P, 1000, 1000, 1000, 60, 12),
+        # RD6012P in its first (6 A) range; the 12 A range is tested separately.
+        (Model.RD6012P, 1000, 10000, 1000, 60, 6),
         (Model.RD6012H, 100, 1000, 100, 60, 12),
         (Model.RD6018, 100, 100, 100, 60, 18),
         (Model.RD6018P, 1000, 1000, 1000, 60, 18),
@@ -97,7 +102,7 @@ def test_find_rejects_unknown_code() -> None:
         (Model.RK8009, 100, 1000, 100, 80, 9),
     ],
 )
-def test_scales_follow_id_register_table(
+def test_scaling_follows_id_register_table(
     model: Model,
     v_scale: int,
     i_scale: int,
@@ -106,37 +111,26 @@ def test_scales_follow_id_register_table(
     i_max: int,
 ) -> None:
     """Scales are 10**decimal places from the vendor's model table."""
-    spec = model.value
-    assert (spec.v_scale, spec.i_scale, spec.p_scale) == (v_scale, i_scale, p_scale)
-    assert (spec.v_max, spec.i_max) == (v_max, i_max)
+    layout = model.value.layout().registers
+
+    assert reader(layout, Field.V)((1000,), {}) == 1000 / v_scale
+    assert reader(layout, Field.I)((1000,), RANGE_6A) == 1000 / i_scale
+    assert reader(layout, Field.P)((0, 1000), {}) == 1000 / p_scale
+
+    # Setpoints allow v_max + 1 V and i_max + 0.1 A.
+    assert writer(layout, Field.V_SET)(v_max + 1, {}) == (
+        round((v_max + 1) * v_scale),
+    )
+    assert writer(layout, Field.I_SET)(i_max + 0.1, RANGE_6A) == (
+        round((i_max + 0.1) * i_scale),
+    )
 
 
-def test_rd6012p_uses_12a_range() -> None:
-    assert (Model.RD6012P.value.i_scale, Model.RD6012P.value.i_max) == (1000, 12)
-    assert Model.RD6012P.value.i_clamp(12, 0) == 12000
+def test_rd6012p_has_two_current_ranges() -> None:
+    layout = Model.RD6012P.value.layout().registers
 
-
-def test_voltage_clamp() -> None:
-    spec = Model.RD6006P.value
-    assert spec.v_clamp(12.5, 0) == 12500
-    assert spec.v_clamp(0, 0) == 0
-    assert spec.v_clamp(60, 0) == 60000
-    assert spec.v_clamp(62, 2) == 62000
-    for v, off in ((-1, 0), (60.001, 0), (62.001, 2)):
-        with pytest.raises(ValueError, match="out of range"):
-            spec.v_clamp(v, off)
-
-
-def test_current_clamp() -> None:
-    assert Model.RD6006P.value.i_clamp(1.0, 0) == 10000
-    assert Model.RD6006P.value.i_clamp(6.2, 0.2) == 62000
-    assert Model.RD6018.value.i_clamp(18.2, 0.2) == 1820
-    for spec, v, off in ((Model.RD6006P.value, -1, 0), (Model.RD6006P.value, 6.0001, 0), (Model.RD6018.value, 18.21, 0.2)):
-        with pytest.raises(ValueError, match="out of range"):
-            spec.i_clamp(v, off)
-
-
-def test_clamp_accepts_float_sums_at_limit() -> None:
-    # 6 + 0.2 and 12 + 0.1 are not exact in binary; the raw check must still pass.
-    assert Model.RK6006.value.i_clamp(6.2, 0.2) == 6200
-    assert Model.RD6012.value.i_clamp(12.1, 0.1) == 1210
+    assert reader(layout, Field.I)((1000,), {Field.I_RANGE: 0}) == 0.1
+    assert reader(layout, Field.I)((1000,), {Field.I_RANGE: 1}) == 1.0
+    assert writer(layout, Field.I_SET)(12.1, {Field.I_RANGE: 1}) == (12100,)
+    with pytest.raises(ValueError, match="out of range 0..6.1"):
+        writer(layout, Field.I_SET)(12.1, {Field.I_RANGE: 0})
