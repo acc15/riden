@@ -124,9 +124,9 @@ class Layout:
 
     def decode(
         self,
+        readers: Mapping[Field, RegRead],
         regs: Registers,
         start: int,
-        readers: Mapping[Field, RegRead],
     ) -> dict[str, Any]:
         """Decode already fetched registers into field values.
 
@@ -170,20 +170,21 @@ class Layout:
     
     def encode(
         self,
-        updates: Mapping[Field, Any],
         writers: Mapping[Field, RegWrite],
-        values_by_field: Mapping[str, Any],
+        updates: Mapping[Field, Any],
+        dependencies: Mapping[str, Any],
     ) -> dict[Field, Registers]:
         """Encode supplied fields into register blocks.
 
         Per-field codec validation and size/range checks happen here, before
         anything is written.  Virtual fields are skipped.
         """
+        values = {**dependencies, **updates}
         encoded: dict[Field, Registers] = {}
         for field, value in updates.items():
             register = self.registers[field]
             try:
-                regs = writers[field](value, register.make_deps(values_by_field))
+                regs = writers[field](value, register.make_deps(values))
             except ValueError as exc:
                 raise ValueError(f"field {field.value}: {exc}") from exc
             if len(regs) != register.size:

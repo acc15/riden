@@ -63,31 +63,31 @@ def test_layout_decode() -> None:
     regs[10] = 42
     regs[12] = 7
     regs[13] = 8
-    values = layout.decode(tuple(regs), 0, readers)
+    values = layout.decode(readers, tuple(regs), 0)
     assert values == {"v": 42, "p": 7}
 
 
 def test_layout_encode() -> None:
     layout = layout_of({Field.V: Register(10, 1, read_int, write_int)})
     writers = layout.writers([Field.V])
-    values_by_field = {"v": 42}
-    encoded = layout.encode({Field.V: 42}, writers, values_by_field)
+    dependencies = {"v": 42}
+    encoded = layout.encode(writers, {Field.V: 42}, dependencies)
     assert encoded == {Field.V: (42,)}
 
     with pytest.raises(ValueError, match="produced 1 registers, expected 2"):
         layout2 = layout_of({Field.V: Register(10, 2, read_int, write_int)})
         writers2 = layout2.writers([Field.V])
-        layout2.encode({Field.V: 42}, writers2, {"v": 42})
+        layout2.encode(writers2, {Field.V: 42}, {"v": 42})
 
     with pytest.raises(ValueError, match="out-of-range"):
         layout3 = layout_of({Field.V: Register(10, 1, read_int, write_int)})
         writers3 = layout3.writers([Field.V])
-        layout3.encode({Field.V: 70000}, writers3, {"v": 70000})
+        layout3.encode(writers3, {Field.V: 70000}, {"v": 70000})
 
     def write_virtual(_: Any, __: Any) -> Registers:
         return ()
 
     layout4 = layout_of({Field.M0_I_RANGE: Register(0, 0, read_flag, write_virtual)})
     writers4 = layout4.writers([Field.M0_I_RANGE])
-    encoded4 = layout4.encode({Field.M0_I_RANGE: True}, writers4, {"m0_i_range": True})
+    encoded4 = layout4.encode(writers4, {Field.M0_I_RANGE: True}, {"m0_i_range": True})
     assert encoded4 == {}

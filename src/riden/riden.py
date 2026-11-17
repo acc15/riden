@@ -164,7 +164,11 @@ class Riden:
             raw = await self.client.read_holding_registers(0, 4)
             model = Model.find(raw[0])
             layout = model.value.layout()
-            decoded = layout.decode(tuple(raw), 0, layout.readers(layout.dependency_order((Field.ID, Field.SN, Field.FW))))
+            decoded = layout.decode(
+                layout.readers(layout.dependency_order((Field.ID, Field.SN, Field.FW))), 
+                tuple(raw), 
+                0
+            )
             self.state = Riden.State(
                 client=self.client,
                 id=decoded["id"],
@@ -210,7 +214,7 @@ class Riden:
             start, count = span
             regs = tuple(await state.client.read_holding_registers(start, count))
 
-        values = layout.decode(regs, start, readers)
+        values = layout.decode(readers, regs, start)
 
         # Dependencies are not part of the result: only what was requested.
         return {field.value: values[field.value] for field in requested}
@@ -237,13 +241,9 @@ class Riden:
         missing = layout.dependency_order(updates, supplied=updates.keys())
         dependencies = await self.read(*missing) if missing else {}
 
-        # Reads are keyed by name and updates by Field; Field is a str
-        # subclass, so the merged map answers both kinds of lookup.
-        values_by_field: dict[str, Any] = {**dependencies, **updates}
-
         # Encode and validate everything before touching the bus, so an invalid
         # value does not leave the device partially updated.
-        encoded = layout.encode(updates, writers, values_by_field)
+        encoded = layout.encode(writers, updates, dependencies)
 
         # Adjacent registers share one transaction; a block that another block
         # depends on is written first.
