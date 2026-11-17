@@ -2,24 +2,47 @@
 import contextlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Self, override
+from typing import Any, Protocol, Self, override
 
-from tenacity import AsyncRetrying
-
-from .connection import (
-    DEFAULT_BAUDRATE,
-    DEFAULT_CONNECT_TIMEOUT,
-    DEFAULT_DELAY,
-    DEFAULT_RESPONSE_RETRY,
-    DEFAULT_TIMEOUT,
-    ClientSource,
-    ModbusClient,
-    make_client,
+import tmodbus
+from bleak.backends.device import BLEDevice
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_fixed,
 )
+from tmodbus import AsyncModbusClient
+from tmodbus.transport import AsyncBaseTransport
+from tmodbus.transport.async_smart import AsyncSmartTransport
+
+from .ble import BleTransport
 from .field import Field, flatten_fields, merge_fields
 from .layout import Layout
 from .model import Model
-from .register import Registers, RegRead, RegWrite
+from .register import Registers
+
+
+class ModbusClient(Protocol):
+    """Minimal tmodbus client surface used by Riden."""
+    async def connect(self) -> None: ...
+    async def disconnect(self) -> None: ...
+    async def read_holding_registers(self, start_address: int, quantity: int) -> list[int]: ...
+    async def write_multiple_registers(self, start_address: int, values: list[int]) -> int: ...
+
+
+DEFAULT_BAUDRATE = 115200
+DEFAULT_TIMEOUT = 1
+DEFAULT_CONNECT_TIMEOUT = 10.0
+DEFAULT_DELAY = 0.02
+DEFAULT_RESPONSE_RETRY = AsyncRetrying(
+    retry=retry_if_exception_type(TimeoutError),
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(0.2),
+)
+BT_PREFIX = "bt://"
+
+type ClientSource = str | ModbusClient | AsyncBaseTransport | BLEDevice
 
 
 class Riden:
@@ -69,7 +92,7 @@ class Riden:
         address: int = 1,
         *,
         baudrate: int = DEFAULT_BAUDRATE,
-        timeout: float | None = DEFAULT_TIMEOUT,
+        timeout: float = DEFAULT_TIMEOUT,
         connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
         delay: float = DEFAULT_DELAY,
         auto_reconnect: bool = True,
@@ -92,17 +115,44 @@ class Riden:
         scan is wrapped directly; a prebuilt ``BleTransport`` is accepted when
         its UUIDs or settings need to be customised.
         """
-        client = make_client(
-            port,
-            address,
-            baudrate=baudrate,
-            timeout=timeout,
-            connect_timeout=connect_timeout,
-            delay=delay,
-            auto_reconnect=auto_reconnect,
-            response_retry=response_retry,
-        )
-        return cls(client)
+        # Return a configured client; construction performs no I/O.  A path
+        # or a ``serialx`` URL creates an async RTU client.  A ``bt://`` URL
+        # creates a BLE transport wrapped in tmodbus's smart transport for
+        # pacing and reconnect.  An already constructed client is returned
+        # unchanged, which keeps tests and custom transports easy.
+        if isinstance(port, str):
+            port = port.strip()
+            if port.lower().startswith(BT_PREFIX):
+                target = port[len(BT_PREFIX):].strip()
+                if not target:
+                    raise ValueError(f"no Bluetooth address in URL: {port!r}")
+                port = target
+            else:
+                port = tmodbus.AsyncRtuTransport(
+                    port,
+                    timeout=timeout,
+                    baudrate=baudrate,
+                    connect_timeout=connect_timeout,
+                )
+
+        if isinstance(port, (str, BLEDevice)):
+            port = BleTransport(
+                port,
+                timeout=timeout,
+                connect_timeout=connect_timeout,
+            )
+
+        if isinstance(port, AsyncBaseTransport):
+            if response_retry is not None or delay > 0 or auto_reconnect:
+                port = AsyncSmartTransport(
+                    port,
+                    wait_between_requests=delay,
+                    auto_reconnect=auto_reconnect,
+                    response_retry_strategy=response_retry,
+                )
+            port = AsyncModbusClient(port, unit_id=address)
+
+        return cls(port)
 
     async def open(self) -> Self:
         if self.state is not None:
@@ -111,15 +161,17 @@ class Riden:
         try:
             await self.client.connect()
             # Identification is I/O, so it belongs to open(), not __init__.
-            values = await self.client.read_holding_registers(0, 4)
-            model = Model.find(values[0])
+            raw = await self.client.read_holding_registers(0, 4)
+            model = Model.find(raw[0])
+            layout = model.value.layout()
+            decoded = layout.decode(tuple(raw), 0, layout.readers(layout.dependency_order((Field.ID, Field.SN, Field.FW))))
             self.state = Riden.State(
                 client=self.client,
-                id=values[0],
-                sn=values[1] << 16 | values[2],
-                fw=values[3] / 100.0,
+                id=decoded["id"],
+                sn=decoded["sn"],
+                fw=decoded["fw"],
                 model=model,
-                layout=model.value.layout(),
+                layout=layout,
             )
         except BaseException:
             # __aexit__ is not called when __aenter__ raises.
@@ -147,20 +199,9 @@ class Riden:
         # fields and cycles fail here, before any I/O.
         order = layout.dependency_order(requested)
 
-        # Validate and collect readers in one pass.  This reports all
-        # unreadable fields before I/O and narrows away the optional ``None``
-        # in Register.read for the type checker.  Dependencies are validated
-        # too: an unreadable dependency breaks the whole request.
-        readers: dict[Field, RegRead] = {}
-        not_readable: list[str] = []
-        for field in order:
-            read = layout.registers[field].read
-            if read is None:
-                not_readable.append(field.value)
-            else:
-                readers[field] = read
-        if not_readable:
-            raise ValueError(f"fields are not readable: {', '.join(not_readable)}")
+        # Readability is validated (and codecs collected) by the layout,
+        # before any I/O.
+        readers = layout.readers(order)
 
         span = layout.register_span(order)
         regs: Registers = ()
@@ -169,18 +210,7 @@ class Riden:
             start, count = span
             regs = tuple(await state.client.read_holding_registers(start, count))
 
-        # Each codec gets only the fields it declared in deps, never the
-        # whole decoded map.  Keys are field names, so the result is already
-        # in the shape the public API returns.
-        values: dict[str, Any] = {}
-        for field in order:
-            register = layout.registers[field]
-            if register.size == 0:
-                raw: Registers = ()
-            else:
-                index = register.addr - start
-                raw = regs[index:index + register.size]
-            values[field.value] = readers[field](raw, register.make_deps(values))
+        values = layout.decode(regs, start, readers)
 
         # Dependencies are not part of the result: only what was requested.
         return {field.value: values[field.value] for field in requested}
@@ -197,24 +227,9 @@ class Riden:
         if not updates:
             return
 
-        # Validate and collect writers in one pass, exactly like read().
-        # All unsupported and unwritable fields are reported before any I/O.
-        writers: dict[Field, RegWrite] = {}
-        unsupported: list[str] = []
-        not_writable: list[str] = []
-        for field in updates:
-            register = layout.registers.get(field)
-            if register is None:
-                unsupported.append(field.value)
-            elif register.write is None:
-                not_writable.append(field.value)
-            else:
-                writers[field] = register.write
-
-        if unsupported:
-            raise ValueError(f"fields are not supported: {', '.join(unsupported)}")
-        if not_writable:
-            raise ValueError(f"fields are not writable: {', '.join(not_writable)}")
+        # Support and writability are validated (and codecs collected) by the
+        # layout, before any I/O.
+        writers = layout.writers(updates)
 
         # A codec is encoded with the fields it declares in deps.  What the
         # caller supplied is used as-is; everything else is read first, in one
@@ -222,46 +237,22 @@ class Riden:
         missing = layout.dependency_order(updates, supplied=updates.keys())
         dependencies = await self.read(*missing) if missing else {}
 
-        # Encode and validate everything before touching the bus, so an invalid
-        # value does not leave the device partially updated.
         # Reads are keyed by name and updates by Field; Field is a str
         # subclass, so the merged map answers both kinds of lookup.
         values_by_field: dict[str, Any] = {**dependencies, **updates}
-        encoded: dict[Field, Registers] = {}
-        for field, value in updates.items():
-            register = layout.registers[field]
-            try:
-                regs = writers[field](value, register.make_deps(values_by_field))
-            except ValueError as exc:
-                raise ValueError(f"field {field.value}: {exc}") from exc
-            if len(regs) != register.size:
-                raise ValueError(
-                    f"field {field.value} produced {len(regs)} registers, "
-                    f"expected {register.size}"
-                )
-            if any(reg < 0 or reg > 0xFFFF for reg in regs):
-                raise ValueError(f"field {field.value} produced out-of-range registers: {regs}")
-            if register.size == 0:
-                # A virtual field validated its value but has no registers to
-                # send.
-                continue
-            encoded[field] = regs
+
+        # Encode and validate everything before touching the bus, so an invalid
+        # value does not leave the device partially updated.
+        encoded = layout.encode(updates, writers, values_by_field)
 
         # Adjacent registers share one transaction; a block that another block
         # depends on is written first.
         for start, regs in layout.write_blocks(encoded):
             await state.client.write_multiple_registers(start, list(regs))
 
-    def _identity(self, v_in: float) -> str:
+    def identity(self) -> str:
         state = self.require_state()
-        return (
-            f"model={state.model} type={state.id} sn={state.sn:08X} fw={state.fw:.2f} "
-            f"input={v_in:.2f}V"
-        )
-
-    async def identity(self) -> str:
-        values = await self.read(Field.V_IN)
-        return self._identity(values[Field.V_IN])
+        return f"model={state.model} type={state.id} sn={state.sn:08X} fw={state.fw:.2f}"
 
     async def close(self) -> None:
         state = self.state
@@ -283,26 +274,26 @@ class Riden:
     async def __aexit__(self, *_):
         await self.close()
 
+    _STATUS_ROWS = (
+        ("input", (Field.V_IN,), "{:.2f}V"),
+        ("set", (Field.V_SET, Field.I_SET), "{:.3f} V, {:.3f} A"),
+        ("output", (Field.V, Field.I, Field.P), "{:.3f} V, {:.3f} A, {:.3f} W"),
+        ("enabled", (Field.EN,), "{}"),
+        ("mode", (Field.MODE,), "{}"),
+        ("protection", (Field.PROTECTION,), "{}"),
+        ("temp", (Field.TEMP_C,), "{} C"),
+    )
+
     async def status(self) -> str:
-        values = await self.read(
-            Field.V_IN,
-            Field.V_SET,
-            Field.I_SET,
-            Field.V,
-            Field.I,
-            Field.P,
-            Field.EN,
-            Field.MODE,
-            Field.PROTECTION,
-            Field.TEMP_C,
-        )
-        return "\n".join(
-            [
-                self._identity(values[Field.V_IN]),
-                f"set:      {values[Field.V_SET]:.3f} V, {values[Field.I_SET]:.3f} A",
-                f"output:   {values[Field.V]:.3f} V, {values[Field.I]:.3f} A, {values[Field.P]:.3f} W",
-                f"enabled:  {values[Field.EN]}",
-                f"mode:     {values[Field.MODE]}",
-                f"protection={values[Field.PROTECTION]}, temp={values[Field.TEMP_C]} C",
-            ]
-        )
+        fields: list[Field] = []
+        for _, row_fields, _ in self._STATUS_ROWS:
+            fields.extend(row_fields)
+        values = await self.read(*dict.fromkeys(fields))
+
+        rows = [
+            (label, template.format(*(values[field] for field in row_fields)))
+            for label, row_fields, template in self._STATUS_ROWS
+        ]
+        width = max(len(label) for label, _ in rows) + 2
+        body = "\n".join(f"{label + ':':<{width}}{value}" for label, value in rows)
+        return f"{self.identity()}\n{body}"

@@ -91,15 +91,6 @@ class _BleWriteTransport(asyncio.WriteTransport):
         self._tasks.clear()
 
 
-@dataclass(frozen=True, slots=True)
-class _Connection:
-    """One fully established BLE link."""
-
-    client: BleakClient
-    protocol: ModbusRtuProtocol
-    write_transport: _BleWriteTransport
-
-
 class BleTransport(AsyncBaseTransport):
     """tmodbus transport over a Riden BLE UART.
 
@@ -107,6 +98,14 @@ class BleTransport(AsyncBaseTransport):
     Passing a ``BLEDevice`` avoids the internal BlueZ scan and is useful when
     several supplies are opened together: one scan can feed all of them.
     """
+
+    @dataclass(frozen=True, slots=True)
+    class State:
+        """One fully established BLE link."""
+
+        client: BleakClient
+        protocol: ModbusRtuProtocol
+        write_transport: _BleWriteTransport
 
     def __init__(
         self,
@@ -127,7 +126,7 @@ class BleTransport(AsyncBaseTransport):
 
         # Exactly one link state: either a fully established connection or
         # nothing.  There is no partially connected state to inspect.
-        self._state: _Connection | None = None
+        self._state: BleTransport.State | None = None
 
     @override
     async def open(self) -> None:
@@ -162,7 +161,7 @@ class BleTransport(AsyncBaseTransport):
                 await client.disconnect()
             raise
 
-        self._state = _Connection(client, protocol, write_transport)
+        self._state = BleTransport.State(client, protocol, write_transport)
 
     @override
     async def close(self) -> None:

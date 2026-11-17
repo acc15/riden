@@ -34,7 +34,7 @@ async def main() -> None:
     ok_on = 0
     async with Riden.connect(args.port, delay=0.2) as rd:
         try:
-            print(await rd.identity())
+            print(rd.identity())
             await rd.write(i_set=args.current, v_set=args.voltage, en=False)
 
             print(

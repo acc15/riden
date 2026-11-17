@@ -3,11 +3,13 @@
 from collections.abc import Callable, Iterable, Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
+from functools import reduce
 from graphlib import CycleError, TopologicalSorter
 from types import MappingProxyType
+from typing import Any
 
 from .field import Field
-from .register import Register, Registers
+from .register import Register, Registers, RegRead, RegWrite
 
 
 def _ordered[Node](
@@ -93,16 +95,110 @@ class Layout:
         125 registers and a write at 123, and tmodbus reports the error
         itself.
         """
-        spans = [
-            (self.registers[field].addr, self.registers[field].size)
-            for field in fields
-            if self.registers[field].size > 0
-        ]
-        if not spans:
-            return None
-        start = min(addr for addr, _ in spans)
-        end = max(addr + size for addr, size in spans)
-        return start, end - start
+        merged = reduce(
+            lambda left, right: right if left is None else (min(left[0], right[0]), max(left[1], right[1])),
+            ((reg.addr, reg.addr + reg.size) for field in fields if (reg := self.registers[field]).size > 0),
+            None,
+        )
+        return None if merged is None else (merged[0], merged[1] - merged[0])
+
+    def readers(self, fields: Iterable[Field]) -> dict[Field, RegRead]:
+        """Collect the read codecs for ``fields``, validating readability.
+
+        Every field must be readable; otherwise a ``ValueError`` listing all
+        unreadable fields is raised before any I/O.  ``fields`` are assumed to
+        be supported (use :meth:`dependency_order` first).
+        """
+        result: dict[Field, RegRead] = {}
+        not_readable: list[str] = []
+        for field in fields:
+            register = self.registers[field]
+            read = register.read
+            if read is None:
+                not_readable.append(field.value)
+            else:
+                result[field] = read
+        if not_readable:
+            raise ValueError(f"fields are not readable: {', '.join(not_readable)}")
+        return result
+
+    def decode(
+        self,
+        regs: Registers,
+        start: int,
+        readers: Mapping[Field, RegRead],
+    ) -> dict[str, Any]:
+        """Decode already fetched registers into field values.
+
+        ``readers`` must be collected from fields already in dependency order;
+        its keys define both the field set and that order.
+        """
+        values: dict[str, Any] = {}
+        for field, read in readers.items():
+            register = self.registers[field]
+            if register.size == 0:
+                raw: Registers = ()
+            else:
+                offset = register.addr - start
+                raw = regs[offset : offset + register.size]
+            values[field.value] = read(raw, register.make_deps(values))
+        return values
+
+    def writers(self, fields: Iterable[Field]) -> dict[Field, RegWrite]:
+        """Collect the write codecs for ``fields``, validating support/writability.
+
+        Unsupported fields raise ``ValueError`` first, then non-writable ones,
+        matching the original behaviour.  ``fields`` are validated against the
+        layout's register map.
+        """
+        result: dict[Field, RegWrite] = {}
+        unsupported: list[str] = []
+        not_writable: list[str] = []
+        for field in fields:
+            register = self.registers.get(field)
+            if register is None:
+                unsupported.append(field.value)
+            elif register.write is None:
+                not_writable.append(field.value)
+            else:
+                result[field] = register.write
+        if unsupported:
+            raise ValueError(f"fields are not supported: {', '.join(unsupported)}")
+        if not_writable:
+            raise ValueError(f"fields are not writable: {', '.join(not_writable)}")
+        return result
+    
+    def encode(
+        self,
+        updates: Mapping[Field, Any],
+        writers: Mapping[Field, RegWrite],
+        values_by_field: Mapping[str, Any],
+    ) -> dict[Field, Registers]:
+        """Encode supplied fields into register blocks.
+
+        Per-field codec validation and size/range checks happen here, before
+        anything is written.  Virtual fields are skipped.
+        """
+        encoded: dict[Field, Registers] = {}
+        for field, value in updates.items():
+            register = self.registers[field]
+            try:
+                regs = writers[field](value, register.make_deps(values_by_field))
+            except ValueError as exc:
+                raise ValueError(f"field {field.value}: {exc}") from exc
+            if len(regs) != register.size:
+                raise ValueError(
+                    f"field {field.value} produced {len(regs)} registers, "
+                    f"expected {register.size}"
+                )
+            if any(reg < 0 or reg > 0xFFFF for reg in regs):
+                raise ValueError(
+                    f"field {field.value} produced out-of-range registers: {regs}"
+                )
+            if register.size == 0:
+                continue
+            encoded[field] = regs
+        return encoded
 
     def write_blocks(
         self,

@@ -1,13 +1,16 @@
 """Tests for the async Riden client on top of a fake tmodbus client."""
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from bleak.backends.device import BLEDevice
+from tmodbus import AsyncModbusClient
 
+from riden.ble import BleTransport
 from riden.field import Field
 from riden.model import Model
-from riden.riden import Riden
+from riden.riden import ModbusClient, Riden
 from tests.conftest import FakeClient, Op, Tx
 
 
@@ -260,8 +263,8 @@ async def test_context_manager_closes_client() -> None:
 
 async def test_identity() -> None:
     async with Riden(FakeClient()) as rd:
-        assert await rd.identity() == (
-            "model=Model.RD6006P type=60065 sn=00000007 fw=12.34 input=24.00V"
+        assert rd.identity() == (
+            "model=Model.RD6006P type=60065 sn=00000007 fw=12.34"
         )
 
 
@@ -269,9 +272,13 @@ async def test_status() -> None:
     async with Riden(FakeClient()) as rd:
         status = await rd.status()
     assert "model=Model.RD6006P type=60065 sn=00000007 fw=12.34" in status
-    assert "set:      12.500 V, 1.000 A" in status
-    assert "output:   12.000 V, 0.500 A, 60.000 W" in status
-    assert "enabled:  True" in status
+    assert "input:      24.00V" in status
+    assert "set:        12.500 V, 1.000 A" in status
+    assert "output:     12.000 V, 0.500 A, 60.000 W" in status
+    assert "enabled:    True" in status
+    assert "mode:       0" in status
+    assert "protection: 0" in status
+    assert "temp:       0 C" in status
 
 
 # RD6012P: current is scaled by the selected range, per output and per preset.
@@ -413,5 +420,37 @@ async def test_reopen_after_close() -> None:
     await rd.close()
     assert not client.connected
     await rd.open()
+    values = await rd.read("v")
     assert client.connected
-    assert (await rd.read("v"))["v"] == 12.0
+    assert values["v"] == 12.0
+
+
+def test_connect_returns_a_prebuilt_client() -> None:
+    fake = cast(ModbusClient, object())
+    assert Riden.connect(fake).client is fake
+
+
+def test_connect_builds_ble_without_io() -> None:
+    client = Riden.connect("bt://AA:BB:CC:DD:EE:FF", timeout=0.5).client
+    assert isinstance(client, AsyncModbusClient)
+
+
+def test_connect_builds_serial_without_io() -> None:
+    client = Riden.connect("/dev/ttyUSB0", baudrate=9600, timeout=0.5).client
+    assert isinstance(client, AsyncModbusClient)
+
+
+def test_connect_accepts_a_bledevice() -> None:
+    device = BLEDevice(
+        "AA:BB:CC:DD:EE:FF",
+        "RK6006",
+        {"path": "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", "props": {}},
+    )
+    client = Riden.connect(device, timeout=0.5, connect_timeout=3).client
+    assert isinstance(client, AsyncModbusClient)
+
+
+def test_connect_wraps_a_prebuilt_ble_transport() -> None:
+    transport = BleTransport("AA:BB:CC:DD:EE:FF", timeout=0.5)
+    client = Riden.connect(transport).client
+    assert isinstance(client, AsyncModbusClient)
