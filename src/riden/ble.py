@@ -13,7 +13,7 @@ so BLE and the Modbus client share the caller's event loop.
 
 import asyncio
 import contextlib
-from dataclasses import dataclass
+from collections.abc import Callable, Coroutine
 from typing import Any, override
 
 from bleak import BleakClient
@@ -27,7 +27,7 @@ NOTIFY_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb"
 WRITE_UUID = "0000ffe2-0000-1000-8000-00805f9b34fb"
 
 
-class _BleWriteTransport(asyncio.WriteTransport):
+class DelegatingWriteTransport(asyncio.WriteTransport):
     """One fully established BLE link and its write channel.
 
     ``ModbusRtuProtocol`` calls ``write()`` synchronously and then awaits the
@@ -37,14 +37,12 @@ class _BleWriteTransport(asyncio.WriteTransport):
 
     def __init__(
         self,
-        client: BleakClient,
-        write_uuid: str,
-        protocol: ModbusRtuProtocol,
+        on_write: Callable[[bytes], Coroutine[Any, Any, None]],
+        on_error: Callable[[Exception], None]
     ):
         super().__init__()
-        self.client = client
-        self._write_uuid = write_uuid
-        self.protocol = protocol
+        self.on_write = on_write
+        self.on_error = on_error 
         self._tasks: set[asyncio.Task[None]] = set()
         self._closing = False
 
@@ -53,7 +51,7 @@ class _BleWriteTransport(asyncio.WriteTransport):
         if self._closing:
             return
         payload = bytes(data)
-        task = asyncio.create_task(self._write(payload))
+        task = asyncio.create_task(self.on_write(payload))
         self._tasks.add(task)
         task.add_done_callback(self._task_done)
 
@@ -63,12 +61,7 @@ class _BleWriteTransport(asyncio.WriteTransport):
             return
         exc = task.exception()
         if isinstance(exc, Exception):
-            self.protocol.connection_lost(exc)
-
-    async def _write(self, data: bytes) -> None:
-        # A write request lets the peripheral reassemble the whole Modbus RTU
-        # frame before handing it to its UART.
-        await self.client.write_gatt_char(self._write_uuid, data, response=True)
+            self.on_error(exc)
 
     @override
     def is_closing(self) -> bool:
@@ -82,6 +75,57 @@ class _BleWriteTransport(asyncio.WriteTransport):
         self._tasks.clear()
 
 
+class BleSession:
+    """One fully established BLE link."""
+
+    client: BleakClient
+    protocol: ModbusRtuProtocol
+    write_transport: DelegatingWriteTransport
+
+    def __init__(
+        self,
+        transport: BleTransport
+    ):
+        self.protocol = ModbusRtuProtocol(
+            on_connection_lost=transport._notify_connection_lost,
+            timeout=transport.timeout,
+            interframe_delay=0.0,
+        )
+        self.client = BleakClient(
+            transport.target,
+            disconnected_callback=lambda _: self.protocol.connection_lost(None),
+            timeout=transport.connect_timeout,
+        )
+        self.write_transport = DelegatingWriteTransport(self.write, self.protocol.connection_lost)
+        self.write_uuid = transport.write_uuid
+        self.notify_uuid = transport.notify_uuid
+
+    async def open(self):
+        try:
+            await self.client.connect()
+            await self.client.start_notify(
+                self.notify_uuid, 
+                lambda _, data: self.protocol.data_received(bytes(data))
+            )
+            self.protocol.connection_made(self.write_transport)
+        except BaseException:
+            self.write_transport.close()
+            with contextlib.suppress(Exception):
+                await self.client.disconnect()
+            raise
+
+    async def write(self, data: bytes):
+        await self.client.write_gatt_char(self.write_uuid, data, response=True)
+
+
+    async def close(self):
+        self.protocol.connection_lost(None)
+        self.write_transport.close()
+        with contextlib.suppress(Exception):
+            await self.client.disconnect()
+
+
+
 class BleTransport(AsyncBaseTransport):
     """tmodbus transport over a Riden BLE UART.
 
@@ -89,14 +133,6 @@ class BleTransport(AsyncBaseTransport):
     Passing a ``BLEDevice`` avoids the internal BlueZ scan and is useful when
     several supplies are opened together: one scan can feed all of them.
     """
-
-    @dataclass(frozen=True, slots=True)
-    class State:
-        """One fully established BLE link."""
-
-        client: BleakClient
-        protocol: ModbusRtuProtocol
-        write_transport: _BleWriteTransport
 
     def __init__(
         self,
@@ -115,76 +151,35 @@ class BleTransport(AsyncBaseTransport):
 
         # Exactly one link state: either a fully established connection or
         # nothing.  There is no partially connected state to inspect.
-        self._state: BleTransport.State | None = None
+        self._session: BleSession | None = None
 
     @override
     async def open(self) -> None:
-        if self.is_open():
-            return
-        if self._state is not None:
-            await self.close()
-
-        client = BleakClient(
-            self.target,
-            disconnected_callback=self._on_disconnect,
-            timeout=self.connect_timeout,
-        )
-        protocol = ModbusRtuProtocol(
-            on_connection_lost=self._on_protocol_lost,
-            timeout=self.timeout,
-            interframe_delay=0.0,
-        )
-        # Both objects are passive; creating them before connect() keeps the
-        # failure path uniform: nothing can be left half-initialised.
-        write_transport = _BleWriteTransport(client, self.write_uuid, protocol)
-
-        try:
-            await client.connect()
-            await client.start_notify(self.notify_uuid, self._on_notify)
-            protocol.connection_made(write_transport)
-        except BaseException:
-            write_transport.close()
-            with contextlib.suppress(Exception):
-                await client.disconnect()
-            raise
-
-        self._state = BleTransport.State(client, protocol, write_transport)
+        if (old_session := self._session) is not None:
+            if old_session.client.is_connected:
+                return
+            self._session = None
+            await old_session.close()
+        session = BleSession(self)
+        await session.open()
+        self._session = session
 
     @override
     async def close(self) -> None:
-        state = self._state
-        if state is None:
+        if (session := self._session) is None:
             return
         # Clearing the state first makes close() idempotent and tells the
         # callbacks below that a disconnect is intentional, not a link loss.
-        self._state = None
-        state.protocol.connection_lost(None)
-        state.write_transport.close()
-        with contextlib.suppress(Exception):
-            await state.client.disconnect()
+        self._session = None
+        await session.close()
 
     @override
     def is_open(self) -> bool:
-        state = self._state
-        return state is not None and state.client.is_connected
+        return (session := self._session) is not None and session.client.is_connected
 
     @override
     async def send_and_receive(self, unit_id: int, pdu: Any) -> Any:
-        state = self._state
-        if state is None or not state.client.is_connected:
+        if (session := self._session) is None or not session.client.is_connected:
             raise ModbusConnectionError("Transport is not connected.")
-        return await state.protocol.send_and_receive(unit_id, pdu)
+        return await session.protocol.send_and_receive(unit_id, pdu)
 
-    def _on_notify(self, _sender: Any, data: bytearray) -> None:
-        state = self._state
-        if state is not None:
-            state.protocol.data_received(bytes(data))
-
-    def _on_disconnect(self, _client: BleakClient) -> None:
-        state = self._state
-        if state is not None:
-            state.protocol.connection_lost(None)
-
-    def _on_protocol_lost(self, exc: Exception | None) -> None:
-        if self._state is not None:
-            self._notify_connection_lost(exc)
