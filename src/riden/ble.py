@@ -26,13 +26,9 @@ from tmodbus.transport.async_rtu import ModbusRtuProtocol
 NOTIFY_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb"
 WRITE_UUID = "0000ffe2-0000-1000-8000-00805f9b34fb"
 
-# ATT's default payload.  Riden's normal Modbus writes fit in one chunk (a
-# five-register preset is 19 bytes).
-_CHUNK_SIZE = 20
-
 
 class _BleWriteTransport(asyncio.WriteTransport):
-    """Minimal asyncio write transport that feeds bytes into a BLE UART.
+    """One fully established BLE link and its write channel.
 
     ``ModbusRtuProtocol`` calls ``write()`` synchronously and then awaits the
     response.  Each call schedules one GATT write task; the protocol's request
@@ -43,14 +39,12 @@ class _BleWriteTransport(asyncio.WriteTransport):
         self,
         client: BleakClient,
         write_uuid: str,
-        chunk_size: int,
         protocol: ModbusRtuProtocol,
     ):
         super().__init__()
-        self._client = client
+        self.client = client
         self._write_uuid = write_uuid
-        self._chunk_size = chunk_size
-        self._protocol = protocol
+        self.protocol = protocol
         self._tasks: set[asyncio.Task[None]] = set()
         self._closing = False
 
@@ -69,15 +63,12 @@ class _BleWriteTransport(asyncio.WriteTransport):
             return
         exc = task.exception()
         if isinstance(exc, Exception):
-            self._protocol.connection_lost(exc)
+            self.protocol.connection_lost(exc)
 
     async def _write(self, data: bytes) -> None:
-        for offset in range(0, len(data), self._chunk_size):
-            await self._client.write_gatt_char(
-                self._write_uuid,
-                data[offset : offset + self._chunk_size],
-                response=False,
-            )
+        # A write request lets the peripheral reassemble the whole Modbus RTU
+        # frame before handing it to its UART.
+        await self.client.write_gatt_char(self._write_uuid, data, response=True)
 
     @override
     def is_closing(self) -> bool:
@@ -115,14 +106,12 @@ class BleTransport(AsyncBaseTransport):
         connect_timeout: float = 10.0,
         notify_uuid: str = NOTIFY_UUID,
         write_uuid: str = WRITE_UUID,
-        chunk_size: int = _CHUNK_SIZE,
     ):
         self.target = target
         self.timeout = timeout
         self.connect_timeout = connect_timeout
         self.notify_uuid = notify_uuid
         self.write_uuid = write_uuid
-        self.chunk_size = chunk_size
 
         # Exactly one link state: either a fully established connection or
         # nothing.  There is no partially connected state to inspect.
@@ -147,9 +136,7 @@ class BleTransport(AsyncBaseTransport):
         )
         # Both objects are passive; creating them before connect() keeps the
         # failure path uniform: nothing can be left half-initialised.
-        write_transport = _BleWriteTransport(
-            client, self.write_uuid, self.chunk_size, protocol
-        )
+        write_transport = _BleWriteTransport(client, self.write_uuid, protocol)
 
         try:
             await client.connect()

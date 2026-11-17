@@ -96,7 +96,7 @@ class Riden:
         connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
         delay: float = DEFAULT_DELAY,
         auto_reconnect: bool = True,
-        response_retry: AsyncRetrying | None = DEFAULT_RESPONSE_RETRY
+        response_retry: AsyncRetrying | None = DEFAULT_RESPONSE_RETRY,
     ) -> Self:
         """Return a client for a serial port or a Bluetooth LE URL.
 
