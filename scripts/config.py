@@ -2,7 +2,9 @@
 
 import logging
 
-DEFAULT_MAC = "27:05:E9:A3:00:37"
+# DEFAULT_MAC = "27:05:E9:A3:00:37"
+DEFAULT_MAC = "E2:F9:C6:24:71:C8"
+
 DEFAULT_URL = f"bt://{DEFAULT_MAC}?channel=1"
 
 logging.basicConfig(
