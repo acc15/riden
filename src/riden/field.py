@@ -29,6 +29,17 @@ class Field(StrEnum):
     PRESET = auto()
     I_RANGE = auto()
 
+    V_MAX = auto()
+    V_SCALE = auto()
+    V_TOLERANCE = auto()
+    OVP_TOLERANCE = auto()
+    I_MAX = auto()
+    I_SCALE = auto()
+    I_TOLERANCE = auto()
+    OCP_TOLERANCE = auto()
+    P_MAX = auto()
+    P_SCALE = auto()
+
     BAT_EN = auto()
     BAT_V = auto()
     EXT_TEMP_C = auto()
@@ -68,60 +79,80 @@ class Field(StrEnum):
     M0_OVP = auto()
     M0_OCP = auto()
     M0_I_RANGE = auto()
+    M0_I_MAX = auto()
+    M0_I_SCALE = auto()
 
     M1_V = auto()
     M1_I = auto()
     M1_OVP = auto()
     M1_OCP = auto()
     M1_I_RANGE = auto()
+    M1_I_MAX = auto()
+    M1_I_SCALE = auto()
 
     M2_V = auto()
     M2_I = auto()
     M2_OVP = auto()
     M2_OCP = auto()
     M2_I_RANGE = auto()
+    M2_I_MAX = auto()
+    M2_I_SCALE = auto()
 
     M3_V = auto()
     M3_I = auto()
     M3_OVP = auto()
     M3_OCP = auto()
     M3_I_RANGE = auto()
+    M3_I_MAX = auto()
+    M3_I_SCALE = auto()
 
     M4_V = auto()
     M4_I = auto()
     M4_OVP = auto()
     M4_OCP = auto()
     M4_I_RANGE = auto()
+    M4_I_MAX = auto()
+    M4_I_SCALE = auto()
 
     M5_V = auto()
     M5_I = auto()
     M5_OVP = auto()
     M5_OCP = auto()
     M5_I_RANGE = auto()
+    M5_I_MAX = auto()
+    M5_I_SCALE = auto()
 
     M6_V = auto()
     M6_I = auto()
     M6_OVP = auto()
     M6_OCP = auto()
     M6_I_RANGE = auto()
+    M6_I_MAX = auto()
+    M6_I_SCALE = auto()
 
     M7_V = auto()
     M7_I = auto()
     M7_OVP = auto()
     M7_OCP = auto()
     M7_I_RANGE = auto()
+    M7_I_MAX = auto()
+    M7_I_SCALE = auto()
 
     M8_V = auto()
     M8_I = auto()
     M8_OVP = auto()
     M8_OCP = auto()
     M8_I_RANGE = auto()
+    M8_I_MAX = auto()
+    M8_I_SCALE = auto()
 
     M9_V = auto()
     M9_I = auto()
     M9_OVP = auto()
     M9_OCP = auto()
     M9_I_RANGE = auto()
+    M9_I_MAX = auto()
+    M9_I_SCALE = auto()
 
     @override
     @classmethod
@@ -131,7 +162,16 @@ class Field(StrEnum):
         return None
 
 
-def flatten_fields(fields: Iterable[str | Iterable[str]]):
+type FieldMapping = Mapping[str, Any] | Mapping[Field, Any]
+"""Field names or :class:`Field` members mapped to their values.
+
+Both forms are accepted because ``Mapping`` is invariant in its key type:
+``Field`` is a ``str`` subclass, but ``Mapping[Field | str, Any]`` collapses
+to ``Mapping[str, Any]`` and would reject a ``dict[Field, Any]``.
+"""
+
+
+def flatten_fields(fields: Iterable[str | Iterable[str]]) -> Iterable[Field]:
     for field in fields:
         match field:
             case Field(): yield field
@@ -140,7 +180,7 @@ def flatten_fields(fields: Iterable[str | Iterable[str]]):
 
 
 def merge_fields(
-    *mappings: Mapping[str, Any] | Mapping[Field, Any],
+    *mappings: FieldMapping,
 ) -> dict[Field, Any]:
     """Merge field mappings into one, normalizing keys to :class:`Field`.
 

@@ -16,7 +16,9 @@ It speaks Modbus RTU over a regular serial port or Bluetooth Low Energy (BLE).
   in one Modbus transaction, and written in one transaction per contiguous
   register block;
 - automatic model detection and per-model voltage/current scaling, including
-  the RD6012P switchable current range.
+  the RD6012P switchable current range;
+- read-only model metadata as regular fields: nominal limits, raw scales and
+  write tolerances.
 
 ## Requirements
 
@@ -220,13 +222,63 @@ No keepalive is needed: both tested Riden BLE modules keep an idle link for at
 least a minute. If a particular adapter drops an idle link, tmodbus's
 automatic reconnect opens it again on the next transaction.
 
+## Model metadata
+
+Models expose their nominal limits, raw scales and write tolerances as
+ordinary read-only fields. They are virtual: reading them costs no I/O.
+The exception is RD6012P, where `I_MAX`/`I_SCALE` and
+`M*_I_MAX`/`M*_I_SCALE` read the current range registers they follow; see
+the RD6012P section below.
+
+| Field | Meaning |
+|-------|---------|
+| `V_MAX` | nominal voltage limit, V |
+| `V_SCALE` | raw units per volt (`1000` means 1 mV) |
+| `V_TOLERANCE` | extra volts accepted by `V_SET` and `M*_V` |
+| `OVP_TOLERANCE` | extra volts accepted by `M*_OVP` |
+| `I_MAX` | current limit of the selected output range, A |
+| `I_SCALE` | raw units per ampere of the selected output range |
+| `I_TOLERANCE` | extra amperes accepted by `I_SET` and `M*_I` |
+| `OCP_TOLERANCE` | extra amperes accepted by `M*_OCP` |
+| `P_MAX` | nominal rated power, W (`v_max * max(i_max)`) |
+| `P_SCALE` | raw units per watt |
+| `M*_I_MAX`, `M*_I_SCALE` | current limit and scale of preset M* |
+
+`I_MAX`/`I_SCALE` follow the output range, while each `M*` pair follows its
+preset's own range. `P_MAX` is nominal and does not change with the range: for
+RD6012P it is 720 W even in the 6 A range.
+
+Tolerance is the margin the device accepts above the nominal limit for a
+write, not measurement accuracy. The actual encoding limits are
+`V_MAX + V_TOLERANCE` for voltage setpoints, `V_MAX + OVP_TOLERANCE` for OVP,
+`I_MAX + I_TOLERANCE` for current setpoints and `I_MAX + OCP_TOLERANCE` for
+OCP.
+
+```python
+meta = await rd.read("v_max", "v_scale", "i_max", "i_scale", "p_max")
+
+# The selected range limit and its write margin, in one read.
+limits = await rd.read("i_max", "i_tolerance")
+max_current = limits["i_max"] + limits["i_tolerance"]
+```
+
+Metadata fields are read-only: passing one to `write()` raises `ValueError`
+before any I/O. They can still be supplied in `deps` to override how another
+field is decoded or encoded; as with any `deps`, the caller is responsible for
+the values.
+
 ## RD6012P / RD6012PW current range
 
 These models have two current ranges, switched on the front panel: 6 A with
 0.1 mA resolution and 12 A with 1 mA resolution. The selected range is
 reported in register 20 (`Field.I_RANGE`: `0` is 6 A, otherwise 12 A), and
 the library scales every output current by the range that is actually
-selected: `10000` for 6 A, `1000` for 12 A.
+selected: `10000` for 6 A, `1000` for 12 A. The selected limit and scale are
+also available as `I_MAX`/`I_SCALE`, and per preset as
+`M*_I_MAX`/`M*_I_SCALE`. Reading `I_MAX`/`I_SCALE` reads `I_RANGE` (register
+20) in the same transaction; `M*_I_MAX`/`M*_I_SCALE` read that preset's
+`M*_I_RANGE` (register 84 for M0, 89 for M1, and so on). On models without a
+range switch these fields are constants and need no I/O.
 
 Reading a current also reads the range, in the same transaction:
 
@@ -234,6 +286,33 @@ Reading a current also reads the range, in the same transaction:
 # I (11) and I_RANGE (20): one read, registers 11-20
 i = (await rd.read("i"))["i"]
 ```
+
+If the range is already known, pass it as `deps`: the range register is not
+read, its value is used to decode the other fields, and the result keeps the
+same shape. This is useful in a loop that reads currents while the range stays
+fixed:
+
+```python
+# I_RANGE is unknown: read I_SET (9), I (11) and I_RANGE (20)
+values = await rd.read("i_set", "i", "i_range")
+
+# I_RANGE is known: read only I_SET (9) and I (11); I_RANGE is taken from deps
+values = await rd.read(
+    "i_set", "i", "i_range", deps={"i_range": values["i_range"]}
+)
+```
+
+Measured current needs only the scale, so a known scale alone avoids the range
+register:
+
+```python
+# The 12 A scale is known: read only I (11), not I_RANGE (20)
+i = (await rd.read("i", deps={"i_scale": 1000}))["i"]
+```
+
+`deps` values are semantic (`i_range` is 0 or 1, not a raw register). The
+caller is responsible for their correctness: a stale or wrong range produces
+plausible-looking but wrong readings.
 
 A write needs the range to encode the current, so the range is read first
 and then the setpoint is written. If the caller supplies `i_range`, it is
@@ -247,6 +326,27 @@ await rd.write(i_set=0.5)
 # No reads: I_RANGE is written first, then I_SET
 await rd.write(i_set=0.5, i_range=0)
 ```
+
+If the range is known but must not be written, pass it as `deps` instead:
+
+```python
+# No reads and no range write: I_RANGE is used only to encode I_SET
+await rd.write(i_set=0.5, deps={"i_range": 0})
+```
+
+When all encoding dependencies are known, even the range register is not
+needed:
+
+```python
+# No reads: scale, limit and tolerance come from deps
+await rd.write(
+    i_set=0.5,
+    deps={"i_scale": 10000, "i_max": 6, "i_tolerance": 0.1},
+)
+```
+
+Values passed as fields are authoritative: if a field is both written and
+named in `deps`, the written value is used.
 
 Every preset M0..M9 has its own range register, so a preset takes five
 registers instead of four (V, I, OVP, OCP, I_RANGE):
@@ -297,14 +397,26 @@ await rd.read("v_set", "en")
 ```
 
 Fields far apart make that one transaction longer, so grouping nearby fields
-is preferable.
+is preferable. Dependencies passed through `deps` are not read, so a request
+with every dependency supplied needs no transaction at all:
+
+```python
+# Only v: one transaction, register 10
+await rd.read("v")
+
+# v and a known i_range: still one transaction, register 10
+await rd.read("v", deps={"i_range": 0})
+```
+
+Virtual metadata fields do not widen the span. The exception is the
+range-dependent current metadata on RD6012P; see the RD6012P section below.
 
 **`write()` uses one transaction per contiguous block.** It encodes and
 validates all values first, then merges fields whose registers follow each
 other without a gap into one block. Every gap starts a new block and a new
 transaction. A value scaled by another field needs that field first: a missing
 dependency is read in one transaction, while a dependency passed by the caller
-is used as-is.
+is used as-is. A dependency passed through `deps` is neither read nor written.
 
 ```python
 # V_SET (8) and I_SET (9) are adjacent: 1 transaction

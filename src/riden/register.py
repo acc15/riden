@@ -52,12 +52,13 @@ class Register:
         """Real fields that must be decoded before this one."""
         return frozenset(self.deps.values())
 
-    def make_deps(self, values: Mapping[str, Any]) -> dict[Field, Any]:
+    def make_deps(self, values: Mapping[Field, Any]) -> dict[Field, Any]:
         """Return the dependency mapping a codec is allowed to see.
 
-        ``values`` is keyed by field name; only fields declared in ``deps``
-        are copied, so a codec can never depend on values it did not declare,
-        and each one is aliased to the key the codec asks for.  Dependencies
-        are decoded first, so every one of them is already in ``values``.
+        ``values`` is keyed by :class:`Field`; only fields declared in
+        ``deps`` are copied, so a codec can never depend on values it did not
+        declare, and each one is aliased to the key the codec asks for.
+        Dependencies are decoded first, so every one of them is already in
+        ``values``.
         """
-        return {name: values[field.value] for name, field in self.deps.items()}
+        return {name: values[field] for name, field in self.deps.items()}

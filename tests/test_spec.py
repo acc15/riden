@@ -19,11 +19,8 @@ from riden.spec import (
     clamp,
     read_centi,
     read_dw,
-    read_flag,
-    read_int,
     read_milli_dw,
-    read_mode,
-    read_protection,
+    read_single,
     read_temp,
     write_int,
 )
@@ -34,8 +31,34 @@ RD6006 = Model.RD6006.value.layout().registers
 RD6012 = Model.RD6012.value.layout().registers
 RD6012P = Model.RD6012P.value.layout().registers
 
-RANGE_6A = {Field.I_RANGE: 0}
-RANGE_12A = {Field.I_RANGE: 1}
+RANGE_6A = {Field.I_MAX: 6, Field.I_SCALE: 10000, Field.I_TOLERANCE: 0.1}
+RANGE_12A = {Field.I_MAX: 12, Field.I_SCALE: 1000, Field.I_TOLERANCE: 0.1}
+SELECT_6A = {Field.I_RANGE: 0}
+SELECT_12A = {Field.I_RANGE: 1}
+
+BASE_V = {Field.V_SCALE: 1000}
+BASE_V_WRITE = {
+    Field.V_MAX: 60,
+    Field.V_SCALE: 1000,
+    Field.V_TOLERANCE: 1.0,
+}
+BASE_OVP_WRITE = {
+    Field.V_MAX: 60,
+    Field.V_SCALE: 1000,
+    Field.V_TOLERANCE: 2.0,
+}
+BASE_I = {Field.I_SCALE: 10000}
+BASE_I_WRITE = {
+    Field.I_MAX: 6,
+    Field.I_SCALE: 10000,
+    Field.I_TOLERANCE: 0.1,
+}
+BASE_OCP_WRITE = {
+    Field.I_MAX: 6,
+    Field.I_SCALE: 10000,
+    Field.I_TOLERANCE: 0.2,
+}
+BASE_P = {Field.P_SCALE: 1000}
 
 
 def layout_of(registers: dict[Field, Register]) -> Layout:
@@ -110,16 +133,43 @@ def test_readable_and_writable_flags() -> None:
 
 
 def test_rd6012p_current_deps_are_aliased() -> None:
-    assert RD6012P[Field.I_SET].deps == {Field.I_RANGE: Field.I_RANGE}
-    assert RD6012P[Field.I].deps == {Field.I_RANGE: Field.I_RANGE}
-    assert RD6012P[Field.M1_I].deps == {Field.I_RANGE: Field.M1_I_RANGE}
-    assert RD6012P[Field.M1_OCP].deps == {Field.I_RANGE: Field.M1_I_RANGE}
-    assert RD6012P[Field.M1_I].dependencies == frozenset({Field.M1_I_RANGE})
+    assert RD6012P[Field.I_SET].deps == {
+        Field.I_MAX: Field.I_MAX,
+        Field.I_SCALE: Field.I_SCALE,
+        Field.I_TOLERANCE: Field.I_TOLERANCE,
+    }
+    # Measured current only needs the scale; the max is a write-side concern.
+    assert RD6012P[Field.I].deps == {Field.I_SCALE: Field.I_SCALE}
+    assert RD6012P[Field.M1_I].deps == {
+        Field.I_MAX: Field.M1_I_MAX,
+        Field.I_SCALE: Field.M1_I_SCALE,
+        Field.I_TOLERANCE: Field.I_TOLERANCE,
+    }
+    assert RD6012P[Field.M1_OCP].deps == {
+        Field.I_MAX: Field.M1_I_MAX,
+        Field.I_SCALE: Field.M1_I_SCALE,
+        Field.I_TOLERANCE: Field.OCP_TOLERANCE,
+    }
+    assert RD6012P[Field.M1_I].dependencies == frozenset(
+        {Field.M1_I_MAX, Field.M1_I_SCALE, Field.I_TOLERANCE}
+    )
 
 
-def test_base_currents_have_no_dependencies() -> None:
-    assert BASE[Field.I_SET].deps == {}
-    assert BASE[Field.M1_I].dependencies == frozenset()
+def test_base_currents_depend_on_virtual_metadata() -> None:
+    assert BASE[Field.I_SET].deps == {
+        Field.I_MAX: Field.I_MAX,
+        Field.I_SCALE: Field.I_SCALE,
+        Field.I_TOLERANCE: Field.I_TOLERANCE,
+    }
+    assert BASE[Field.I].deps == {Field.I_SCALE: Field.I_SCALE}
+    assert BASE[Field.M1_I].deps == {
+        Field.I_MAX: Field.M1_I_MAX,
+        Field.I_SCALE: Field.M1_I_SCALE,
+        Field.I_TOLERANCE: Field.I_TOLERANCE,
+    }
+    assert BASE[Field.M1_I].dependencies == frozenset(
+        {Field.M1_I_MAX, Field.M1_I_SCALE, Field.I_TOLERANCE}
+    )
 
 
 def test_model_deps_are_read_only() -> None:
@@ -128,19 +178,28 @@ def test_model_deps_are_read_only() -> None:
     deps = RD6012P[Field.M1_I].deps
     assert isinstance(deps, MappingProxyType)
     with pytest.raises(TypeError):
-        cast(Any, deps)[Field.I_RANGE] = Field.I
+        cast(Any, deps)[Field.I_MAX] = Field.I
 
 
 def test_make_deps_exposes_declared_fields_under_aliases() -> None:
     register = RD6012P[Field.M1_I]
-    values = {"m1_i_range": True, "i_range": False}
-    assert register.make_deps(values) == {Field.I_RANGE: True}
-    assert BASE[Field.V_SET].make_deps({"i_range": 1}) == {}
+    values = {
+        Field.M1_I_MAX: 6,
+        Field.M1_I_SCALE: 10000,
+        Field.I_TOLERANCE: 0.1,
+        Field.I_RANGE: False,
+    }
+    assert register.make_deps(values) == {
+        Field.I_MAX: 6,
+        Field.I_SCALE: 10000,
+        Field.I_TOLERANCE: 0.1,
+    }
+    assert BASE[Field.V_SET].make_deps(BASE_V_WRITE) == BASE_V_WRITE
 
 
 def test_make_deps_requires_the_real_field_to_be_decoded() -> None:
     with pytest.raises(KeyError):
-        RD6012P[Field.M1_I].make_deps({"i_range": 1})
+        RD6012P[Field.M1_I].make_deps({Field.M1_I_MAX: 6})
 
 
 def test_register_keeps_the_deps_mapping_as_given() -> None:
@@ -171,17 +230,110 @@ def test_rd6012p_ranges_are_real_flags() -> None:
         assert register.is_writable
 
 
+# Model metadata
+
+
+def test_metadata_fields_are_virtual_and_read_only() -> None:
+    fields = [
+        Field.V_MAX,
+        Field.V_SCALE,
+        Field.V_TOLERANCE,
+        Field.OVP_TOLERANCE,
+        Field.I_MAX,
+        Field.I_SCALE,
+        Field.I_TOLERANCE,
+        Field.OCP_TOLERANCE,
+        Field.P_MAX,
+        Field.P_SCALE,
+        *(Field(f"m{n}_i_max") for n in range(10)),
+        *(Field(f"m{n}_i_scale") for n in range(10)),
+    ]
+    for field in fields:
+        register = BASE[field]
+        assert register.size == 0
+        assert register.is_readable
+        assert not register.is_writable
+
+
+@pytest.mark.parametrize(
+    ("model", "v_max", "v_scale", "i_max", "i_scale", "p_max", "p_scale"),
+    [
+        (Model.RD6006P, 60, 1000, 6, 10000, 360, 1000),
+        (Model.RD6012, 60, 100, 12, 100, 720, 100),
+        (Model.RK4206H, 42, 100, 6, 1000, 252, 100),
+        (Model.RK8009, 80, 100, 9, 1000, 720, 100),
+    ],
+)
+def test_metadata_values_follow_model(
+    model: Model,
+    v_max: int,
+    v_scale: int,
+    i_max: int,
+    i_scale: int,
+    p_max: int,
+    p_scale: int,
+) -> None:
+    layout = model.value.layout().registers
+
+    assert reader(layout, Field.V_MAX)((), {}) == v_max
+    assert reader(layout, Field.V_SCALE)((), {}) == v_scale
+    assert reader(layout, Field.V_TOLERANCE)((), {}) == 1.0
+    assert reader(layout, Field.OVP_TOLERANCE)((), {}) == 2.0
+    assert reader(layout, Field.P_MAX)((), {}) == p_max
+    assert reader(layout, Field.P_SCALE)((), {}) == p_scale
+    assert reader(layout, Field.I_MAX)((), SELECT_6A) == i_max
+    assert reader(layout, Field.I_SCALE)((), SELECT_6A) == i_scale
+    assert reader(layout, Field.I_TOLERANCE)((), {}) == 0.1
+    assert reader(layout, Field.OCP_TOLERANCE)((), {}) == 0.2
+
+
+def test_tolerance_deps_are_aliased() -> None:
+    assert RD6012P[Field.V_SET].deps[Field.V_TOLERANCE] is Field.V_TOLERANCE
+    assert RD6012P[Field.M1_OVP].deps[Field.V_TOLERANCE] is Field.OVP_TOLERANCE
+    assert RD6012P[Field.I_SET].deps[Field.I_TOLERANCE] is Field.I_TOLERANCE
+    assert RD6012P[Field.M1_I].deps[Field.I_TOLERANCE] is Field.I_TOLERANCE
+    assert RD6012P[Field.M1_OCP].deps[Field.I_TOLERANCE] is Field.OCP_TOLERANCE
+
+
+def test_rd6012p_metadata_follows_selected_range() -> None:
+    assert reader(RD6012P, Field.I_MAX)((), SELECT_6A) == 6
+    assert reader(RD6012P, Field.I_MAX)((), SELECT_12A) == 12
+    assert reader(RD6012P, Field.I_SCALE)((), SELECT_6A) == 10000
+    assert reader(RD6012P, Field.I_SCALE)((), SELECT_12A) == 1000
+
+
+def test_rd6012p_preset_metadata_follows_its_range() -> None:
+    assert reader(RD6012P, Field.M1_I_MAX)((), SELECT_6A) == 6
+    assert reader(RD6012P, Field.M1_I_MAX)((), SELECT_12A) == 12
+    assert reader(RD6012P, Field.M1_I_SCALE)((), SELECT_6A) == 10000
+    assert reader(RD6012P, Field.M1_I_SCALE)((), SELECT_12A) == 1000
+
+
+def test_metadata_deps_follow_range_registers() -> None:
+    assert RD6012P[Field.I_MAX].deps == {Field.I_RANGE: Field.I_RANGE}
+    assert RD6012P[Field.I_SCALE].deps == {Field.I_RANGE: Field.I_RANGE}
+    assert RD6012P[Field.M1_I_MAX].deps == {Field.I_RANGE: Field.M1_I_RANGE}
+    assert RD6012P[Field.M1_I_SCALE].deps == {Field.I_RANGE: Field.M1_I_RANGE}
+    assert BASE[Field.I_MAX].deps == {}
+    assert BASE[Field.M1_I_MAX].deps == {}
+
+
+def test_base_preset_metadata_is_constant() -> None:
+    assert reader(BASE, Field.M1_I_MAX)((), {}) == 6
+    assert reader(BASE, Field.M1_I_SCALE)((), {}) == 10000
+
+
 # Codecs
 
 
 def test_scalar_readers() -> None:
-    assert read_flag((0,), {}) is False
-    assert read_flag((1,), {}) is True
-    assert read_int((42,), {}) == 42
-    assert read_protection((0,), {}) is Protection.NONE
-    assert read_protection((2,), {}) is Protection.OCP
-    assert read_mode((0,), {}) is Mode.CV
-    assert read_mode((1,), {}) is Mode.CC
+    assert read_single(bool)((0,), {}) is False
+    assert read_single(bool)((1,), {}) is True
+    assert read_single(int)((42,), {}) == 42
+    assert read_single(Protection)((0,), {}) is Protection.NONE
+    assert read_single(Protection)((2,), {}) is Protection.OCP
+    assert read_single(Mode)((0,), {}) is Mode.CV
+    assert read_single(Mode)((1,), {}) is Mode.CC
 
 
 def test_multiregister_readers() -> None:
@@ -191,18 +343,18 @@ def test_multiregister_readers() -> None:
 
 
 def test_scaled_readers_use_model_scales() -> None:
-    assert reader(BASE, Field.V_SET)((12500,), {}) == 12.5
-    assert reader(BASE, Field.I_SET)((10000,), {}) == 1.0
-    assert reader(RD6006, Field.V_SET)((12500,), {}) == 125.0
+    assert reader(BASE, Field.V_SET)((12500,), BASE_V) == 12.5
+    assert reader(BASE, Field.I_SET)((10000,), BASE_I) == 1.0
+    assert reader(RD6006, Field.V_SET)((12500,), {Field.V_SCALE: 100}) == 125.0
     assert read_centi((1234,), {}) == 12.34
     assert read_milli_dw((1, 0), {}) == 65.536
 
 
 def test_register_readers() -> None:
     assert reader(BASE, Field.FW)((1234,), {}) == 12.34
-    assert reader(BASE, Field.P)((0, 60000), {}) == 60.0
-    assert reader(RD6006, Field.P)((0, 6000), {}) == 60.0
-    assert reader(RD6012, Field.P)((1, 0), {}) == 655.36
+    assert reader(BASE, Field.P)((0, 60000), BASE_P) == 60.0
+    assert reader(RD6006, Field.P)((0, 6000), {Field.P_SCALE: 100}) == 60.0
+    assert reader(RD6012, Field.P)((1, 0), {Field.P_SCALE: 100}) == 655.36
     assert reader(BASE, Field.TEMP_C)((1, 5), {}) == -5
     assert reader(BASE, Field.PROTECTION)((2,), {}) is Protection.OCP
 
@@ -210,17 +362,17 @@ def test_register_readers() -> None:
 def test_scalar_writers_always_return_register_tuples() -> None:
     assert write_int(7, {}) == (7,)
     assert write_int(True, {}) == (1,)
-    assert writer(BASE, Field.V_SET)(12.5, {}) == (12500,)
-    assert writer(BASE, Field.I_SET)(1.0, {}) == (10000,)
-    assert writer(BASE, Field.M0_OVP)(62.0, {}) == (62000,)
-    assert writer(BASE, Field.M0_OCP)(6.2, {}) == (62000,)
+    assert writer(BASE, Field.V_SET)(12.5, BASE_V_WRITE) == (12500,)
+    assert writer(BASE, Field.I_SET)(1.0, BASE_I_WRITE) == (10000,)
+    assert writer(BASE, Field.M0_OVP)(62.0, BASE_OVP_WRITE) == (62000,)
+    assert writer(BASE, Field.M0_OCP)(6.2, BASE_OCP_WRITE) == (62000,)
     assert writer(BASE, Field.EN)(True, {}) == (1,)
 
 
 def test_writers_accept_device_limits() -> None:
     # RD6006P: setpoints up to v_max + 1 V and i_max + 0.1 A.
-    assert writer(BASE, Field.V_SET)(61.0, {}) == (61000,)
-    assert writer(BASE, Field.I_SET)(6.1, {}) == (61000,)
+    assert writer(BASE, Field.V_SET)(61.0, BASE_V_WRITE) == (61000,)
+    assert writer(BASE, Field.I_SET)(6.1, BASE_I_WRITE) == (61000,)
 
 
 @pytest.mark.parametrize(
@@ -235,8 +387,9 @@ def test_writers_accept_device_limits() -> None:
     ],
 )
 def test_writers_reject_out_of_range(field: Field, value: float) -> None:
+    deps = BASE_V_WRITE if field is Field.V_SET else BASE_I_WRITE
     with pytest.raises(ValueError, match="out of range"):
-        writer(BASE, field)(value, {})
+        writer(BASE, field)(value, deps)
 
 
 @pytest.mark.parametrize(
@@ -244,10 +397,17 @@ def test_writers_reject_out_of_range(field: Field, value: float) -> None:
 )
 def test_preset_ocp_allows_device_limit(model: Model, i_max: int, i_scale: int) -> None:
     # Factory presets store OCP = i_max + 0.2 A.
-    write = writer(model.value.layout().registers, Field.M9_OCP)
-    assert write(i_max + 0.2, {}) == (round((i_max + 0.2) * i_scale),)
+    layout = model.value.layout().registers
+    register = layout[Field.M9_OCP]
+    write = writer(layout, Field.M9_OCP)
+    deps = register.make_deps({
+        Field.M9_I_MAX: i_max,
+        Field.M9_I_SCALE: i_scale,
+        Field.OCP_TOLERANCE: 0.2,
+    })
+    assert write(i_max + 0.2, deps) == (round((i_max + 0.2) * i_scale),)
     with pytest.raises(ValueError, match="out of range"):
-        write(i_max + 0.3, {})
+        write(i_max + 0.3, deps)
 
 
 def test_rd6012p_current_reads_follow_selected_range() -> None:
@@ -266,11 +426,22 @@ def test_rd6012p_current_writes_follow_selected_range() -> None:
 
 
 def test_rd6012p_ocp_follows_selected_range() -> None:
+    register = RD6012P[Field.M1_OCP]
     write = writer(RD6012P, Field.M1_OCP)
-    assert write(6.2, RANGE_6A) == (62000,)
-    assert write(12.2, RANGE_12A) == (12200,)
+    range_6a = register.make_deps({
+        Field.M1_I_MAX: 6,
+        Field.M1_I_SCALE: 10000,
+        Field.OCP_TOLERANCE: 0.2,
+    })
+    range_12a = register.make_deps({
+        Field.M1_I_MAX: 12,
+        Field.M1_I_SCALE: 1000,
+        Field.OCP_TOLERANCE: 0.2,
+    })
+    assert write(6.2, range_6a) == (62000,)
+    assert write(12.2, range_12a) == (12200,)
     with pytest.raises(ValueError, match="out of range 0..6.2"):
-        write(12.2, RANGE_6A)
+        write(12.2, range_6a)
 
 
 def test_clamp_encodes_and_checks_in_raw_units() -> None:
@@ -294,14 +465,14 @@ def test_clamp_accepts_float_sums_at_limit() -> None:
 
 
 CHAIN = layout_of({
-    Field.V: Register(10, 1, read_int, deps={Field.I: Field.I}),
-    Field.I: Register(11, 1, read_int, deps={Field.I_RANGE: Field.I_RANGE}),
-    Field.I_RANGE: Register(20, 1, read_flag),
+    Field.V: Register(10, 1, read_single(int), deps={Field.I: Field.I}),
+    Field.I: Register(11, 1, read_single(int), deps={Field.I_RANGE: Field.I_RANGE}),
+    Field.I_RANGE: Register(20, 1, read_single(bool)),
 })
 
 
 def test_layout_exposes_the_register_map() -> None:
-    registers = MappingProxyType({Field.V: Register(10, 1, read_int)})
+    registers = MappingProxyType({Field.V: Register(10, 1, read_single(int))})
     layout = Layout(registers)
     assert layout.registers is registers
 
@@ -328,15 +499,15 @@ def test_dependency_order_rejects_unknown_fields() -> None:
 
 
 def test_dependency_order_rejects_unknown_dependency() -> None:
-    layout = layout_of({Field.V: Register(10, 1, read_int, deps={Field.I: Field.I})})
+    layout = layout_of({Field.V: Register(10, 1, read_single(int), deps={Field.I: Field.I})})
     with pytest.raises(ValueError, match=r"field i is not supported \(required by v\)"):
         layout.dependency_order([Field.V])
 
 
 def test_dependency_order_rejects_cycles() -> None:
     layout = layout_of({
-        Field.V: Register(10, 1, read_int, deps={Field.I: Field.I}),
-        Field.I: Register(11, 1, read_int, deps={Field.V: Field.V}),
+        Field.V: Register(10, 1, read_single(int), deps={Field.I: Field.I}),
+        Field.I: Register(11, 1, read_single(int), deps={Field.V: Field.V}),
     })
     with pytest.raises(ValueError, match="cyclic field dependencies: v -> i -> v"):
         layout.dependency_order([Field.V])
@@ -358,22 +529,22 @@ def test_write_blocks_report_a_cycle_between_blocks() -> None:
 
 def test_register_span_covers_gaps() -> None:
     layout = layout_of({
-        Field.V: Register(10, 1, read_int),
-        Field.P: Register(12, 2, read_int),
+        Field.V: Register(10, 1, read_single(int)),
+        Field.P: Register(12, 2, read_single(int)),
     })
     assert layout.register_span([Field.P, Field.V]) == (10, 4)
 
 
 def test_register_span_ignores_virtual_fields() -> None:
     layout = layout_of({
-        Field.V: Register(10, 1, read_int),
-        Field.M0_I_RANGE: Register(0, 0, read_flag),
+        Field.V: Register(10, 1, read_single(int)),
+        Field.M0_I_RANGE: Register(0, 0, read_single(bool)),
     })
     assert layout.register_span([Field.M0_I_RANGE, Field.V]) == (10, 1)
 
 
 def test_register_span_of_only_virtual_fields_is_none() -> None:
-    layout = layout_of({Field.M0_I_RANGE: Register(0, 0, read_flag)})
+    layout = layout_of({Field.M0_I_RANGE: Register(0, 0, read_single(bool))})
     assert layout.register_span([Field.M0_I_RANGE]) is None
 
 
@@ -394,6 +565,41 @@ def test_write_blocks_write_the_selector_first() -> None:
     })
     encoded = {Field.I_SET: (10000,), Field.I_RANGE: (0,)}
     assert layout.write_blocks(encoded) == [(20, (0,)), (9, (10000,))]
+
+
+def test_write_blocks_order_through_virtual_dependencies() -> None:
+    # A current's scale is virtual, but it still depends on the written range.
+    # The chain has two virtual hops to make sure the walk is transitive.
+    layout = layout_of({
+        Field.I_SET: Register(9, 1, deps={Field.M0_I_RANGE: Field.M0_I_RANGE}),
+        Field.M0_I_RANGE: Register(
+            0, 0, deps={Field.M1_I_RANGE: Field.M1_I_RANGE}
+        ),
+        Field.M1_I_RANGE: Register(0, 0, deps={Field.I_RANGE: Field.I_RANGE}),
+        Field.I_RANGE: Register(20, 1),
+    })
+    encoded = {Field.I_SET: (10000,), Field.I_RANGE: (0,)}
+    assert layout.write_blocks(encoded) == [(20, (0,)), (9, (10000,))]
+
+
+def test_write_blocks_ignore_virtual_chains_without_written_sources() -> None:
+    layout = layout_of({
+        Field.I_SET: Register(9, 1, deps={Field.M0_I_RANGE: Field.M0_I_RANGE}),
+        Field.M0_I_RANGE: Register(0, 0, deps={Field.I_RANGE: Field.I_RANGE}),
+        Field.I_RANGE: Register(20, 1),
+    })
+    assert layout.write_blocks({Field.I_SET: (10000,)}) == [(9, (10000,))]
+
+
+def test_write_blocks_terminate_on_a_virtual_cycle() -> None:
+    layout = layout_of({
+        Field.I_SET: Register(9, 1, deps={Field.M0_I_RANGE: Field.M0_I_RANGE}),
+        Field.M0_I_RANGE: Register(
+            0, 0, deps={Field.M1_I_RANGE: Field.M1_I_RANGE}
+        ),
+        Field.M1_I_RANGE: Register(0, 0, deps={Field.M0_I_RANGE: Field.M0_I_RANGE}),
+    })
+    assert layout.write_blocks({Field.I_SET: (10000,)}) == [(9, (10000,))]
 
 
 def test_write_blocks_keep_independent_fields_in_address_order() -> None:

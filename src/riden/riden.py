@@ -2,6 +2,7 @@
 import contextlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, Protocol, Self, override
 
 import tmodbus
@@ -17,7 +18,7 @@ from tmodbus.transport import AsyncBaseTransport
 from tmodbus.transport.async_smart import AsyncSmartTransport
 
 from .ble import BleTransport
-from .field import Field, flatten_fields, merge_fields
+from .field import Field, FieldMapping, flatten_fields, merge_fields
 from .layout import Layout
 from .model import Model
 from .register import Registers
@@ -171,9 +172,9 @@ class Riden:
             )
             self.state = Riden.State(
                 client=self.client,
-                id=decoded["id"],
-                sn=decoded["sn"],
-                fw=decoded["fw"],
+                id=decoded[Field.ID],
+                sn=decoded[Field.SN],
+                fw=decoded[Field.FW],
                 model=model,
                 layout=layout,
             )
@@ -184,24 +185,24 @@ class Riden:
             raise
         return self
 
-    async def read(self, *fields: str | Iterable[str]) -> dict[str, Any]:
-        """Return the requested fields, keyed by name.
+    async def _read(
+        self,
+        state: Riden.State,
+        fields: Iterable[Field],
+        supplied: Mapping[Field, Any],
+    ) -> dict[Field, Any]:
+        """Decode ``fields`` and their transitive dependencies.
 
-        Fields that are only needed to decode another one are read but are not
-        part of the result, so a request for one field returns exactly it.
+        The result is keyed by :class:`Field`.  ``supplied`` seeds the
+        decoder: fields named there are taken as-is, so neither they nor their
+        own dependencies are read, and they are available to the codecs of
+        their dependents.  Every other dependency is read and decoded first.
         """
-        state = self.require_state()
         layout = state.layout
-
-        # dict.fromkeys() flattens, normalizes and deduplicates in one pass,
-        # while preserving the requested order.
-        requested = list(dict.fromkeys(flatten_fields(fields)))
-        if not requested:
-            return {}
 
         # Dependencies are decoded before their dependents; unsupported
         # fields and cycles fail here, before any I/O.
-        order = layout.dependency_order(requested)
+        order = layout.dependency_order(fields, supplied.keys())
 
         # Readability is validated (and codecs collected) by the layout,
         # before any I/O.
@@ -214,16 +215,53 @@ class Riden:
             start, count = span
             regs = tuple(await state.client.read_holding_registers(start, count))
 
-        values = layout.decode(readers, regs, start)
+        return layout.decode(readers, regs, start, supplied)
+
+    async def read(
+        self,
+        *fields: str | Iterable[str],
+        deps: FieldMapping = MappingProxyType({}),
+    ) -> dict[str, Any]:
+        """Return the requested fields, keyed by name.
+
+        Fields that are only needed to decode another one are read but are not
+        part of the result, so a request for one field returns exactly it.
+
+        ``deps`` supplies values the caller already knows.  A field named there
+        is not read from the device: its value is used as-is to decode the
+        other fields, and it is returned unchanged if it is requested too.
+        Values are semantic (``i_range`` is 0 or 1, not a raw register), and
+        the caller is responsible for their correctness: a stale or wrong
+        scale produces plausible-looking but wrong readings.
+        """
+        state = self.require_state()
+
+        # dict.fromkeys() flattens, normalizes and deduplicates in one pass,
+        # while preserving the requested order.
+        requested = list(dict.fromkeys(flatten_fields(fields)))
+        if not requested:
+            return {}
+
+        supplied = merge_fields(deps)
+        values = await self._read(state, requested, supplied)
 
         # Dependencies are not part of the result: only what was requested.
-        return {field.value: values[field.value] for field in requested}
+        return {field.value: values[field] for field in requested}
 
     async def write(
         self,
-        *values: Mapping[str, Any] | Mapping[Field, Any],
+        *values: FieldMapping,
+        deps: FieldMapping = MappingProxyType({}),
         **fields: Any,
     ) -> None:
+        """Write fields to the device.
+
+        ``deps`` supplies values the caller already knows, like in
+        :meth:`read`.  A field named there is neither read from the device nor
+        written: it is used as-is to encode the other fields.  If the same
+        field is passed for writing too, the written value wins.  Values are
+        semantic, and the caller is responsible for their correctness.
+        """
         state = self.require_state()
         layout = state.layout
 
@@ -231,15 +269,18 @@ class Riden:
         if not updates:
             return
 
+        # Written fields are authoritative: a deps value for the same field is
+        # ignored when the frame is encoded.
+        supplied = merge_fields(deps, updates)
+
         # Support and writability are validated (and codecs collected) by the
         # layout, before any I/O.
         writers = layout.writers(updates)
 
-        # A codec is encoded with the fields it declares in deps.  What the
-        # caller supplied is used as-is; everything else is read first, in one
+        # A codec is encoded with the fields it declares in deps.  Supplied
+        # fields are taken as-is; everything else is read first, in one
         # transaction, together with its own transitive dependencies.
-        missing = layout.dependency_order(updates, supplied=updates.keys())
-        dependencies = await self.read(*missing) if missing else {}
+        dependencies = await self._read(state, updates.keys(), supplied)
 
         # Encode and validate everything before touching the bus, so an invalid
         # value does not leave the device partially updated.

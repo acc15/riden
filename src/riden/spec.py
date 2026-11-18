@@ -18,7 +18,16 @@ from typing import Any
 from .enums import Mode, Protection
 from .field import Field
 from .layout import Layout
-from .register import Register, Registers
+from .register import Register, Registers, RegRead
+
+# The device accepts a setpoint slightly above the nominal limit and silently
+# keeps the old value beyond it; these margins are part of the register map,
+# exposed as the read-only V_TOLERANCE/OVP_TOLERANCE/I_TOLERANCE/OCP_TOLERANCE
+# fields.
+V_TOLERANCE = 1.0
+OVP_TOLERANCE = 2.0
+I_TOLERANCE = 0.1
+OCP_TOLERANCE = 0.2
 
 
 def clamp(maximum: float, scale: int, v: float, off: float) -> int:
@@ -49,17 +58,14 @@ class Spec:
     layout: Callable[[], Layout]
 
 
-def read_flag(r: Registers, _: Mapping[Field, Any]):
-    return bool(r[0])
+def read_single(convert: Callable[[int], Any]) -> RegRead:
+    """Return a codec for a one-register field converted with ``convert``."""
+    return lambda r, _: convert(r[0])
 
 
-def read_int(r: Registers, _: Mapping[Field, Any]):
-    return r[0]
-
-
-def read_off(_: Registers, __: Mapping[Field, Any]):
-    """Virtual selector: the model has no such switch, so it is always off."""
-    return False
+def read_const(value: Any) -> RegRead:
+    """Return a codec for a virtual read-only field with a fixed value."""
+    return lambda _r, _deps: value
 
 
 def write_off(_: Any, __: Mapping[Field, Any]) -> Registers:
@@ -69,14 +75,6 @@ def write_off(_: Any, __: Mapping[Field, Any]) -> Registers:
 
 def write_int(v, _: Mapping[Field, Any]) -> Registers:
     return (int(v),)
-
-
-def read_protection(r: Registers, _: Mapping[Field, Any]):
-    return Protection(r[0])
-
-
-def read_mode(r: Registers, _: Mapping[Field, Any]):
-    return Mode(r[0])
 
 
 def read_dw(r: Registers, _: Mapping[Field, Any]):
@@ -112,6 +110,13 @@ def riden_spec(
     to ``v_max + 2`` and OCP up to ``i_max + 0.2``.  Raw register values are
     divided by ``*_scale`` on read and multiplied on write.
 
+    The same values are exposed as virtual read-only fields: ``V_MAX``,
+    ``V_SCALE``, ``I_MAX``, ``I_SCALE``, ``P_MAX``, ``P_SCALE`` and, per
+    preset, ``M*_I_MAX``/``M*_I_SCALE``.  The write margins are fields too:
+    ``V_TOLERANCE``/``OVP_TOLERANCE`` and ``I_TOLERANCE``/``OCP_TOLERANCE``.
+    They cost no I/O; the current ones follow the selected range, and
+    ``P_MAX`` is the nominal ``v_max * max(i_max)``.
+
     ``i_max``/``i_scale`` may be sequences, one entry per selectable current
     range.  Then every current is decoded against the selected range, which
     the codec receives as ``Field.I_RANGE``: 0 picks the first entry, any
@@ -128,32 +133,44 @@ def riden_spec(
         """Select the current range: 0 is the first, anything else the second."""
         return 1 if switched and deps[Field.I_RANGE] else 0
 
-    def read_v(r: Registers, _: Mapping[Field, Any]):
-        return r[0] / v_scale
+    def read_v(r: Registers, deps: Mapping[Field, Any]):
+        return r[0] / deps[Field.V_SCALE]
 
-    def write_v(v, _: Mapping[Field, Any]) -> Registers:
-        """Voltage setpoint: the device accepts up to v_max + 1 V."""
-        return (clamp(v_max, v_scale, v, 1),)
-
-    def write_ovp(v, _: Mapping[Field, Any]) -> Registers:
-        """Over-voltage protection: the device accepts up to v_max + 2 V."""
-        return (clamp(v_max, v_scale, v, 2),)
+    def write_voltage(v, deps: Mapping[Field, Any]) -> Registers:
+        """Voltage setpoint or OVP, allowing the field's tolerance."""
+        return (
+            clamp(
+                deps[Field.V_MAX],
+                deps[Field.V_SCALE],
+                v,
+                deps[Field.V_TOLERANCE],
+            ),
+        )
 
     def read_i(r: Registers, deps: Mapping[Field, Any]):
-        return r[0] / i_scales[i_range(deps)]
+        return r[0] / deps[Field.I_SCALE]
 
-    def write_i(v, deps: Mapping[Field, Any]) -> Registers:
-        """Current setpoint: the device accepts up to i_max + 0.1 A."""
-        index = i_range(deps)
-        return (clamp(i_maxes[index], i_scales[index], v, 0.1),)
+    def write_current(v, deps: Mapping[Field, Any]) -> Registers:
+        """Current setpoint or OCP, allowing the field's tolerance."""
+        return (
+            clamp(
+                deps[Field.I_MAX],
+                deps[Field.I_SCALE],
+                v,
+                deps[Field.I_TOLERANCE],
+            ),
+        )
 
-    def write_ocp(v, deps: Mapping[Field, Any]) -> Registers:
-        """Over-current protection: the device accepts up to i_max + 0.2 A."""
-        index = i_range(deps)
-        return (clamp(i_maxes[index], i_scales[index], v, 0.2),)
+    def read_i_max(_: Registers, deps: Mapping[Field, Any]) -> int:
+        """The maximum of the selected current range."""
+        return i_maxes[i_range(deps)]
+
+    def read_i_scale(_: Registers, deps: Mapping[Field, Any]) -> int:
+        """Raw units per ampere of the selected current range."""
+        return i_scales[i_range(deps)]
 
     def read_p(r: Registers, deps: Mapping[Field, Any]):
-        return read_dw(r, deps) / p_scale
+        return read_dw(r, deps) / deps[Field.P_SCALE]
 
     def layout() -> Layout:
         """Return the register map of the model.
@@ -169,84 +186,142 @@ def riden_spec(
         # The output and each preset scale current by their own range selector.
         # The maps are read-only, like the layout's register map, so a shipped
         # map cannot be changed by accident.
-        output_deps = MappingProxyType({Field.I_RANGE: Field.I_RANGE} if switched else {})
+        voltage_scale_deps = MappingProxyType({Field.V_SCALE: Field.V_SCALE})
+        voltage_deps = MappingProxyType({
+            Field.V_MAX: Field.V_MAX,
+            Field.V_SCALE: Field.V_SCALE,
+            Field.V_TOLERANCE: Field.V_TOLERANCE,
+        })
+        ovp_deps = MappingProxyType({
+            Field.V_MAX: Field.V_MAX,
+            Field.V_SCALE: Field.V_SCALE,
+            Field.V_TOLERANCE: Field.OVP_TOLERANCE,
+        })
+        current_scale_deps = MappingProxyType({Field.I_SCALE: Field.I_SCALE})
+        current_deps = MappingProxyType({
+            Field.I_MAX: Field.I_MAX,
+            Field.I_SCALE: Field.I_SCALE,
+            Field.I_TOLERANCE: Field.I_TOLERANCE,
+        })
+        range_deps = MappingProxyType({Field.I_RANGE: Field.I_RANGE} if switched else {})
+        p_scale_deps = MappingProxyType({Field.P_SCALE: Field.P_SCALE})
         fields = {
-            Field.ID: Register(0, 1, read_int),
+            Field.ID: Register(0, 1, read_single(int)),
             Field.SN: Register(1, 2, read_dw),
             Field.FW: Register(3, 1, read_centi),
             Field.TEMP_C: Register(4, 2, read_temp),
             Field.TEMP_F: Register(6, 2, read_temp),
-            Field.V_SET: Register(8, 1, read_v, write_v),
-            Field.I_SET: Register(9, 1, read_i, write_i, deps=output_deps),
-            Field.V: Register(10, 1, read_v),
-            Field.I: Register(11, 1, read_i, deps=output_deps),
-            Field.P: Register(12, 2, read_p),
+            Field.V_SET: Register(8, 1, read_v, write_voltage, deps=voltage_deps),
+            Field.I_SET: Register(9, 1, read_i, write_current, deps=current_deps),
+            Field.V: Register(10, 1, read_v, deps=voltage_scale_deps),
+            Field.I: Register(11, 1, read_i, deps=current_scale_deps),
+            Field.P: Register(12, 2, read_p, deps=p_scale_deps),
             Field.V_IN: Register(14, 1, read_centi),
-            Field.LOCK: Register(15, 1, read_flag, write_int),
-            Field.PROTECTION: Register(16, 1, read_protection),
-            Field.MODE: Register(17, 1, read_mode),
-            Field.EN: Register(18, 1, read_flag, write_int),
-            Field.PRESET: Register(19, 1, read_int, write_int),
+            Field.LOCK: Register(15, 1, read_single(bool), write_int),
+            Field.PROTECTION: Register(16, 1, read_single(Protection)),
+            Field.MODE: Register(17, 1, read_single(Mode)),
+            Field.EN: Register(18, 1, read_single(bool), write_int),
+            Field.PRESET: Register(19, 1, read_single(int), write_int),
             # RD6012P current range: 0 is the 6 A range, otherwise 12 A.
             # Other models report 0.
-            Field.I_RANGE: Register(20, 1, read_flag, write_int),
-            Field.BAT_EN: Register(32, 1, read_flag),
-            Field.BAT_V: Register(33, 1, read_v),
+            Field.I_RANGE: Register(20, 1, read_single(bool), write_int),
+            # Model metadata is virtual and read-only: size 0 means neither
+            # codec touches a register, and a missing write codec rejects
+            # attempts to write it.
+            Field.V_MAX: Register(0, 0, read_const(v_max)),
+            Field.V_SCALE: Register(0, 0, read_const(v_scale)),
+            Field.V_TOLERANCE: Register(0, 0, read_const(V_TOLERANCE)),
+            Field.OVP_TOLERANCE: Register(0, 0, read_const(OVP_TOLERANCE)),
+            Field.I_MAX: Register(0, 0, read_i_max, deps=range_deps),
+            Field.I_SCALE: Register(0, 0, read_i_scale, deps=range_deps),
+            Field.I_TOLERANCE: Register(0, 0, read_const(I_TOLERANCE)),
+            Field.OCP_TOLERANCE: Register(0, 0, read_const(OCP_TOLERANCE)),
+            Field.P_MAX: Register(0, 0, read_const(v_max * max(i_maxes))),
+            Field.P_SCALE: Register(0, 0, read_const(p_scale)),
+            Field.BAT_EN: Register(32, 1, read_single(bool)),
+            Field.BAT_V: Register(33, 1, read_v, deps=voltage_scale_deps),
             Field.EXT_TEMP_C: Register(34, 2, read_temp),
             Field.EXT_TEMP_F: Register(36, 2, read_temp),
             Field.AH: Register(38, 2, read_milli_dw),
             Field.WH: Register(40, 2, read_milli_dw),
-            Field.YEAR: Register(48, 1, read_int, write_int),
-            Field.MONTH: Register(49, 1, read_int, write_int),
-            Field.DAY: Register(50, 1, read_int, write_int),
-            Field.HOUR: Register(51, 1, read_int, write_int),
-            Field.MINUTE: Register(52, 1, read_int, write_int),
-            Field.SECOND: Register(53, 1, read_int, write_int),
+            Field.YEAR: Register(48, 1, read_single(int), write_int),
+            Field.MONTH: Register(49, 1, read_single(int), write_int),
+            Field.DAY: Register(50, 1, read_single(int), write_int),
+            Field.HOUR: Register(51, 1, read_single(int), write_int),
+            Field.MINUTE: Register(52, 1, read_single(int), write_int),
+            Field.SECOND: Register(53, 1, read_single(int), write_int),
             # Register 54 is a command register, not calibration data:
             # writing 5377 (0x1501) commits the calibration registers 55-64 to
             # NVRAM.  It is not readable because it carries no meaningful
             # state.
             Field.CAL_COMMIT: Register(54, 1, None, write_int),
-            Field.CAL_V_ZERO: Register(55, 1, read_int, write_int),
-            Field.CAL_V_SCALE: Register(56, 1, read_int, write_int),
-            Field.CAL_BV_ZERO: Register(57, 1, read_int, write_int),
-            Field.CAL_BV_SCALE: Register(58, 1, read_int, write_int),
-            Field.CAL_I_ZERO: Register(59, 1, read_int, write_int),
-            Field.CAL_I_SCALE: Register(60, 1, read_int, write_int),
-            Field.CAL_BI_ZERO: Register(61, 1, read_int, write_int),
-            Field.CAL_BI_SCALE: Register(62, 1, read_int, write_int),
+            Field.CAL_V_ZERO: Register(55, 1, read_single(int), write_int),
+            Field.CAL_V_SCALE: Register(56, 1, read_single(int), write_int),
+            Field.CAL_BV_ZERO: Register(57, 1, read_single(int), write_int),
+            Field.CAL_BV_SCALE: Register(58, 1, read_single(int), write_int),
+            Field.CAL_I_ZERO: Register(59, 1, read_single(int), write_int),
+            Field.CAL_I_SCALE: Register(60, 1, read_single(int), write_int),
+            Field.CAL_BI_ZERO: Register(61, 1, read_single(int), write_int),
+            Field.CAL_BI_SCALE: Register(62, 1, read_single(int), write_int),
             # RD6012P only: a second output-current calibration pair for the
             # 12 A range.  The vendor app reads registers 55-64 as one block
             # and shows these two only for model code 60125; on other models
             # read them but do not treat them as meaningful.
-            Field.CAL_I12_ZERO: Register(63, 1, read_int, write_int),
-            Field.CAL_I12_SCALE: Register(64, 1, read_int, write_int),
-            Field.TAKE_OK: Register(66, 1, read_flag, write_int),
-            Field.TAKE_OUT: Register(67, 1, read_flag, write_int),
-            Field.BOOT_EN: Register(68, 1, read_flag, write_int),
-            Field.VOLUME: Register(69, 1, read_flag, write_int),
-            Field.LOGO: Register(70, 1, read_flag, write_int),
-            Field.LANG: Register(71, 1, read_int, write_int),
-            Field.BACKLIGHT: Register(72, 1, read_int, write_int),
+            Field.CAL_I12_ZERO: Register(63, 1, read_single(int), write_int),
+            Field.CAL_I12_SCALE: Register(64, 1, read_single(int), write_int),
+            Field.TAKE_OK: Register(66, 1, read_single(bool), write_int),
+            Field.TAKE_OUT: Register(67, 1, read_single(bool), write_int),
+            Field.BOOT_EN: Register(68, 1, read_single(bool), write_int),
+            Field.VOLUME: Register(69, 1, read_single(bool), write_int),
+            Field.LOGO: Register(70, 1, read_single(bool), write_int),
+            Field.LANG: Register(71, 1, read_single(int), write_int),
+            Field.BACKLIGHT: Register(72, 1, read_single(int), write_int),
         }
 
         stride = 5 if switched else 4
         for n in range(10):
             base = 80 + stride * n
-            # One current codec serves every preset: it asks for I_RANGE and
-            # the map aliases it to this preset's own range register.
-            preset_deps = MappingProxyType({Field.I_RANGE: Field(f"m{n}_i_range")} if switched else {})
-            fields[Field(f"m{n}_v")] = Register(base, 1, read_v, write_v)
-            fields[Field(f"m{n}_i")] = Register(base + 1, 1, read_i, write_i, deps=preset_deps)
-            fields[Field(f"m{n}_ovp")] = Register(base + 2, 1, read_v, write_ovp)
-            fields[Field(f"m{n}_ocp")] = Register(base + 3, 1, read_i, write_ocp, deps=preset_deps)
+            # One current codec serves every preset: it asks for the global
+            # metadata fields and the map aliases them to this preset's own
+            # range.
+            preset_current_deps = MappingProxyType({
+                Field.I_MAX: Field(f"m{n}_i_max"),
+                Field.I_SCALE: Field(f"m{n}_i_scale"),
+                Field.I_TOLERANCE: Field.I_TOLERANCE,
+            })
+            preset_ocp_deps = MappingProxyType({
+                Field.I_MAX: Field(f"m{n}_i_max"),
+                Field.I_SCALE: Field(f"m{n}_i_scale"),
+                Field.I_TOLERANCE: Field.OCP_TOLERANCE,
+            })
+            preset_range_deps = MappingProxyType(
+                {Field.I_RANGE: Field(f"m{n}_i_range")} if switched else {}
+            )
+            fields[Field(f"m{n}_v")] = Register(
+                base, 1, read_v, write_voltage, deps=voltage_deps
+            )
+            fields[Field(f"m{n}_i")] = Register(
+                base + 1, 1, read_i, write_current, deps=preset_current_deps
+            )
+            fields[Field(f"m{n}_ovp")] = Register(
+                base + 2, 1, read_v, write_voltage, deps=ovp_deps
+            )
+            fields[Field(f"m{n}_ocp")] = Register(
+                base + 3, 1, read_i, write_current, deps=preset_ocp_deps
+            )
+            fields[Field(f"m{n}_i_max")] = Register(
+                0, 0, read_i_max, deps=preset_range_deps
+            )
+            fields[Field(f"m{n}_i_scale")] = Register(
+                0, 0, read_i_scale, deps=preset_range_deps
+            )
             if switched:
-                fields[Field(f"m{n}_i_range")] = Register(base + 4, 1, read_flag, write_int)
+                fields[Field(f"m{n}_i_range")] = Register(base + 4, 1, read_single(bool), write_int)
             else:
                 # The model has no switchable range, but callers should not
                 # need a per-model code path: a zero-size field is virtual, so
                 # its codecs touch no register.
-                fields[Field(f"m{n}_i_range")] = Register(0, 0, read_off, write_off)
+                fields[Field(f"m{n}_i_range")] = Register(0, 0, read_const(False), write_off)
 
         # A dependency the map cannot decode would otherwise fail at the first
         # read of that field; catch it when the map is built instead.

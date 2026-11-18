@@ -44,7 +44,6 @@ class Layout:
     def dependency_order(
         self,
         fields: Iterable[Field],
-        *,
         supplied: AbstractSet[Field] = frozenset(),
     ) -> list[Field]:
         """Return ``fields`` plus their transitive dependencies, dependencies first.
@@ -127,13 +126,18 @@ class Layout:
         readers: Mapping[Field, RegRead],
         regs: Registers,
         start: int,
-    ) -> dict[str, Any]:
+        initial: Mapping[Field, Any] = {},
+    ) -> dict[Field, Any]:
         """Decode already fetched registers into field values.
 
         ``readers`` must be collected from fields already in dependency order;
-        its keys define both the field set and that order.
+        its keys define both the field set and that order.  ``initial`` seeds
+        the decoded values, so a dependency the caller already knows need not
+        be fetched.  A field present in both is decoded normally and replaces
+        the seeded value.  Both the input and the result are keyed by
+        :class:`Field`; the public ``str`` names are applied by the client.
         """
-        values: dict[str, Any] = {}
+        values: dict[Field, Any] = dict(initial or {})
         for field, read in readers.items():
             register = self.registers[field]
             if register.size == 0:
@@ -141,7 +145,7 @@ class Layout:
             else:
                 offset = register.addr - start
                 raw = regs[offset : offset + register.size]
-            values[field.value] = read(raw, register.make_deps(values))
+            values[field] = read(raw, register.make_deps(values))
         return values
 
     def writers(self, fields: Iterable[Field]) -> dict[Field, RegWrite]:
@@ -172,12 +176,15 @@ class Layout:
         self,
         writers: Mapping[Field, RegWrite],
         updates: Mapping[Field, Any],
-        dependencies: Mapping[str, Any],
+        dependencies: Mapping[Field, Any],
     ) -> dict[Field, Registers]:
         """Encode supplied fields into register blocks.
 
-        Per-field codec validation and size/range checks happen here, before
-        anything is written.  Virtual fields are skipped.
+        ``dependencies`` are decoded values keyed by :class:`Field`; they and
+        ``updates`` are merged before the codecs see them, so a caller-supplied
+        value overrides a read one.  Per-field codec validation and size/range
+        checks happen here, before anything is written.  Virtual fields are
+        skipped.
         """
         values = {**dependencies, **updates}
         encoded: dict[Field, Registers] = {}
@@ -201,6 +208,32 @@ class Layout:
             encoded[field] = regs
         return encoded
 
+    def _write_predecessors(
+        self, field: Field, encoded: AbstractSet[Field]
+    ) -> set[Field]:
+        """Return the written fields that ``field`` transitively depends on.
+
+        Virtual fields are never encoded, but they can have real dependencies:
+        a current's scale depends on its range.  The walk passes through
+        unencoded fields instead of stopping at them, so the range is still
+        ordered before the current it scales.
+        """
+        result: set[Field] = set()
+        seen: set[Field] = set()
+        stack = list(self.registers[field].dependencies)
+        while stack:
+            dep = stack.pop()
+            if dep in seen:
+                continue
+            seen.add(dep)
+            if dep in encoded:
+                result.add(dep)
+            else:
+                register = self.registers.get(dep)
+                if register is not None:
+                    stack.extend(register.dependencies)
+        return result
+
     def write_blocks(
         self,
         encoded: Mapping[Field, Registers],
@@ -210,7 +243,9 @@ class Layout:
         Registers that touch share one transaction.  Blocks are ordered so
         that a field which another written field depends on is written first:
         a current range must reach the device before the current that is
-        scaled by it.  Virtual fields have size 0 and are never encoded.
+        scaled by it.  Virtual fields have size 0 and are never encoded, but
+        dependencies are followed through them, so a virtual scale still
+        links a current to the written range it depends on.
         """
         blocks: list[tuple[int, list[int]]] = []
         block_of: dict[Field, int] = {}
@@ -226,11 +261,12 @@ class Layout:
             blocks.append((self.registers[field].addr, list(regs)))
             block_of[field] = len(blocks) - 1
 
+        encoded_fields = frozenset(encoded)
         graph: dict[int, set[int]] = {index: set() for index in range(len(blocks))}
         for field, index in block_of.items():
-            for dep in self.registers[field].dependencies:
-                source = block_of.get(dep)
-                if source is not None and source != index:
+            for dep in self._write_predecessors(field, encoded_fields):
+                source = block_of[dep]
+                if source != index:
                     graph[index].add(source)
 
         order = _ordered(graph, lambda index: f"block@{blocks[index][0]}")

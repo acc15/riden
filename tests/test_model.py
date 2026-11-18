@@ -6,8 +6,6 @@ from riden.field import Field
 from riden.model import Model
 from tests.conftest import reader, writer
 
-RANGE_6A = {Field.I_RANGE: 0}
-
 
 @pytest.mark.parametrize(
     ("code", "model"),
@@ -112,25 +110,40 @@ def test_scaling_follows_id_register_table(
 ) -> None:
     """Scales are 10**decimal places from the vendor's model table."""
     layout = model.value.layout().registers
+    voltage = {Field.V_SCALE: v_scale}
+    current = {Field.I_SCALE: i_scale}
+    voltage_write = {
+        Field.V_MAX: v_max,
+        Field.V_SCALE: v_scale,
+        Field.V_TOLERANCE: 1.0,
+    }
+    current_write = {
+        Field.I_MAX: i_max,
+        Field.I_SCALE: i_scale,
+        Field.I_TOLERANCE: 0.1,
+    }
+    power = {Field.P_SCALE: p_scale}
 
-    assert reader(layout, Field.V)((1000,), {}) == 1000 / v_scale
-    assert reader(layout, Field.I)((1000,), RANGE_6A) == 1000 / i_scale
-    assert reader(layout, Field.P)((0, 1000), {}) == 1000 / p_scale
+    assert reader(layout, Field.V)((1000,), voltage) == 1000 / v_scale
+    assert reader(layout, Field.I)((1000,), current) == 1000 / i_scale
+    assert reader(layout, Field.P)((0, 1000), power) == 1000 / p_scale
 
     # Setpoints allow v_max + 1 V and i_max + 0.1 A.
-    assert writer(layout, Field.V_SET)(v_max + 1, {}) == (
+    assert writer(layout, Field.V_SET)(v_max + 1, voltage_write) == (
         round((v_max + 1) * v_scale),
     )
-    assert writer(layout, Field.I_SET)(i_max + 0.1, RANGE_6A) == (
+    assert writer(layout, Field.I_SET)(i_max + 0.1, current_write) == (
         round((i_max + 0.1) * i_scale),
     )
 
 
 def test_rd6012p_has_two_current_ranges() -> None:
     layout = Model.RD6012P.value.layout().registers
+    range_6a = {Field.I_MAX: 6, Field.I_SCALE: 10000, Field.I_TOLERANCE: 0.1}
+    range_12a = {Field.I_MAX: 12, Field.I_SCALE: 1000, Field.I_TOLERANCE: 0.1}
 
-    assert reader(layout, Field.I)((1000,), {Field.I_RANGE: 0}) == 0.1
-    assert reader(layout, Field.I)((1000,), {Field.I_RANGE: 1}) == 1.0
-    assert writer(layout, Field.I_SET)(12.1, {Field.I_RANGE: 1}) == (12100,)
+    assert reader(layout, Field.I)((1000,), range_6a) == 0.1
+    assert reader(layout, Field.I)((1000,), range_12a) == 1.0
+    assert writer(layout, Field.I_SET)(12.1, range_12a) == (12100,)
     with pytest.raises(ValueError, match="out of range 0..6.1"):
-        writer(layout, Field.I_SET)(12.1, {Field.I_RANGE: 0})
+        writer(layout, Field.I_SET)(12.1, range_6a)
