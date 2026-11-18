@@ -13,7 +13,7 @@ DEFAULT_URL = f"bt://{DEFAULT_ADDRESS}"
 @dataclass(frozen=True, slots=True)
 class Preset:
     v: float
-    i: float
+    i: float = 0.01 # minimal current for safety
     ovp: float = 62
     ocp: float = 6.2
     i_range: float = 0
@@ -42,5 +42,7 @@ async def main() -> None:
         # for i, p  in enumerate(presets):
         #     await rd.write(p.as_dict(i))
         print("Done!!! Check presets in settings!")
+        print("Values is ")
+        print(await rd.read(fields.keys()))
 
 asyncio.run(main())
