@@ -292,6 +292,26 @@ await rd.write({i: 1.0, ovp: 60.0})
 `I_RANGE`, `I_MAX`, `I_SCALE`); `PresetField` adds the preset number. Both
 forms work in `read()`, `write()` and `deps=`.
 
+A whole preset can be handled with `Preset`:
+
+```python
+from riden import Preset
+
+# Read every field of M1 in one transaction.
+preset = await rd.read(Preset(1))
+
+# Read only selected fields.
+values = await rd.read(Preset(1).only("v", "i"))
+
+# Build the write mapping from parameter names or PresetParam members.
+await rd.write(Preset(1).params(v=12.0, i=1.0, ocp=5.0))
+await rd.write(Preset(1).params({PresetParam.V: 12.0}, i=1.0))
+```
+
+`Preset.params()` maps parameter names/enums to `PresetField` keys of that
+preset. Later mappings override earlier ones, and keyword arguments override
+mappings, just like `Riden.write()`.
+
 ## RD6012P / RD6012PW current range
 
 These models have two current ranges, switched on the front panel: 6 A with

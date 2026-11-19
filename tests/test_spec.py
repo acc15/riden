@@ -11,7 +11,7 @@ from typing import Any, cast
 import pytest
 
 from riden.enums import Mode, Protection
-from riden.field import Field, FieldRef, PresetField, PresetParam
+from riden.field import Field, FieldAny, PresetField, PresetParam
 from riden.layout import Layout
 from riden.model import Model
 from riden.register import Register, Registers
@@ -38,6 +38,12 @@ PRESETS = {
     for num in range(10)
     for param in PresetParam
 }
+
+
+def addr_of(layout: Layout, field: FieldAny) -> int:
+    addr = layout.find_addr(field)
+    assert addr is not None
+    return addr
 
 RANGE_6A = {Field.I_MAX: 6, Field.I_SCALE: 10000, Field.I_TOLERANCE: 0.1}
 RANGE_12A = {Field.I_MAX: 12, Field.I_SCALE: 1000, Field.I_TOLERANCE: 0.1}
@@ -92,8 +98,8 @@ def test_register_metadata() -> None:
 def test_base_presets_take_four_registers() -> None:
     for n in range(10):
         base = 80 + 4 * n
-        assert BASE_LAYOUT.addr(PresetField(n, PresetParam.V)) == base
-        assert BASE_LAYOUT.addr(PresetField(n, PresetParam.OCP)) == base + 3
+        assert addr_of(BASE_LAYOUT, PresetField(n, PresetParam.V)) == base
+        assert addr_of(BASE_LAYOUT, PresetField(n, PresetParam.OCP)) == base + 3
 
 
 def test_rd6012p_presets_take_five_registers() -> None:
@@ -106,7 +112,7 @@ def test_rd6012p_presets_take_five_registers() -> None:
     )
 
     def addresses(num: int) -> list[int]:
-        return [RD6012P_LAYOUT.addr(PresetField(num, part)) for part in parts]
+        return [addr_of(RD6012P_LAYOUT, PresetField(num, part)) for part in parts]
 
     assert addresses(0) == [80, 81, 82, 83, 84]
     assert addresses(9) == [125, 126, 127, 128, 129]
@@ -165,13 +171,11 @@ def test_rd6012p_current_deps_are_aliased() -> None:
         Field.I_SCALE: PresetField(1, PresetParam.I_SCALE),
         Field.I_TOLERANCE: Field.OCP_TOLERANCE,
     }
-    assert RD6012P_LAYOUT.dependencies(PresetField(1, PresetParam.I)) == frozenset(
-        {
-            PresetField(1, PresetParam.I_MAX),
-            PresetField(1, PresetParam.I_SCALE),
-            Field.I_TOLERANCE,
-        }
-    )
+    assert set(RD6012P_LAYOUT.deps(PresetField(1, PresetParam.I)).values()) == {
+        PresetField(1, PresetParam.I_MAX),
+        PresetField(1, PresetParam.I_SCALE),
+        Field.I_TOLERANCE,
+    }
 
 
 def test_base_currents_depend_on_virtual_metadata() -> None:
@@ -186,13 +190,11 @@ def test_base_currents_depend_on_virtual_metadata() -> None:
         Field.I_SCALE: PresetField(1, PresetParam.I_SCALE),
         Field.I_TOLERANCE: Field.I_TOLERANCE,
     }
-    assert BASE_LAYOUT.dependencies(PresetField(1, PresetParam.I)) == frozenset(
-        {
-            PresetField(1, PresetParam.I_MAX),
-            PresetField(1, PresetParam.I_SCALE),
-            Field.I_TOLERANCE,
-        }
-    )
+    assert set(BASE_LAYOUT.deps(PresetField(1, PresetParam.I)).values()) == {
+        PresetField(1, PresetParam.I_MAX),
+        PresetField(1, PresetParam.I_SCALE),
+        Field.I_TOLERANCE,
+    }
 
 
 def test_model_deps_are_read_only() -> None:
@@ -248,7 +250,7 @@ def test_register_keeps_the_deps_mapping_as_given() -> None:
 
 def test_base_preset_range_is_virtual() -> None:
     for num in range(10):
-        located = BASE_LAYOUT.resolve(PresetField(num, PresetParam.I_RANGE))
+        located = BASE_LAYOUT.find(PresetField(num, PresetParam.I_RANGE))
         assert located is not None
         register = located.reg
         assert register.size == 0
@@ -260,7 +262,7 @@ def test_base_preset_range_is_virtual() -> None:
 
 def test_rd6012p_ranges_are_real_flags() -> None:
     for field in (Field.I_RANGE, *(PresetField(num, PresetParam.I_RANGE) for num in range(10))):
-        located = RD6012P_LAYOUT.resolve(field)
+        located = RD6012P_LAYOUT.find(field)
         assert located is not None
         register = located.reg
         assert register.size == 1
@@ -287,7 +289,7 @@ def test_metadata_fields_are_virtual_and_read_only() -> None:
         *(PresetField(num, PresetParam.I_SCALE) for num in range(10)),
     ]
     for field in fields:
-        located = BASE_LAYOUT.resolve(field)
+        located = BASE_LAYOUT.find(field)
         assert located is not None
         register = located.reg
         assert register.size == 0
@@ -571,7 +573,7 @@ def test_write_blocks_report_a_cycle_between_blocks() -> None:
         Field.I: Register(2, 1),
         Field.P: Register(10, 1, deps={Field.I: Field.I}),
     })
-    encoded: dict[FieldRef, Registers] = {
+    encoded: dict[FieldAny, Registers] = {
         Field.V: (1,),
         Field.I: (2,),
         Field.P: (10,),
@@ -607,7 +609,7 @@ def test_write_blocks_merge_adjacent_registers() -> None:
         Field.I_SET: Register(9, 1),
         Field.EN: Register(18, 1),
     })
-    encoded: dict[FieldRef, Registers] = {
+    encoded: dict[FieldAny, Registers] = {
         Field.V_SET: (12500,),
         Field.I_SET: (10000,),
         Field.EN: (1,),
@@ -620,7 +622,7 @@ def test_write_blocks_write_the_selector_first() -> None:
         Field.I_SET: Register(9, 1, deps={Field.I_RANGE: Field.I_RANGE}),
         Field.I_RANGE: Register(20, 1),
     })
-    encoded: dict[FieldRef, Registers] = {
+    encoded: dict[FieldAny, Registers] = {
         Field.I_SET: (10000,),
         Field.I_RANGE: (0,),
     }
@@ -636,7 +638,7 @@ def test_write_blocks_order_through_virtual_dependencies() -> None:
         Field.I_SCALE: Register(0, 0, deps={Field.I_RANGE: Field.I_RANGE}),
         Field.I_RANGE: Register(20, 1),
     })
-    encoded: dict[FieldRef, Registers] = {
+    encoded: dict[FieldAny, Registers] = {
         Field.I_SET: (10000,),
         Field.I_RANGE: (0,),
     }
@@ -649,7 +651,7 @@ def test_write_blocks_ignore_virtual_chains_without_written_sources() -> None:
         Field.I_MAX: Register(0, 0, deps={Field.I_RANGE: Field.I_RANGE}),
         Field.I_RANGE: Register(20, 1),
     })
-    encoded: dict[FieldRef, Registers] = {Field.I_SET: (10000,)}
+    encoded: dict[FieldAny, Registers] = {Field.I_SET: (10000,)}
     assert layout.write_blocks(encoded) == [(9, (10000,))]
 
 
@@ -659,7 +661,7 @@ def test_write_blocks_terminate_on_a_virtual_cycle() -> None:
         Field.I_MAX: Register(0, 0, deps={Field.I_SCALE: Field.I_SCALE}),
         Field.I_SCALE: Register(0, 0, deps={Field.I_MAX: Field.I_MAX}),
     })
-    encoded: dict[FieldRef, Registers] = {Field.I_SET: (10000,)}
+    encoded: dict[FieldAny, Registers] = {Field.I_SET: (10000,)}
     assert layout.write_blocks(encoded) == [(9, (10000,))]
 
 
@@ -668,5 +670,5 @@ def test_write_blocks_keep_independent_fields_in_address_order() -> None:
         Field.EN: Register(18, 1),
         Field.V_SET: Register(8, 1),
     })
-    encoded: dict[FieldRef, Registers] = {Field.EN: (1,), Field.V_SET: (12500,)}
+    encoded: dict[FieldAny, Registers] = {Field.EN: (1,), Field.V_SET: (12500,)}
     assert layout.write_blocks(encoded) == [(8, (12500,)), (18, (1,))]

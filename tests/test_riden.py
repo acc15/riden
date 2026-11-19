@@ -18,7 +18,7 @@ async def test_open_reads_identity_in_one_transaction() -> None:
     client = FakeClient()
     rd = Riden(client)
     assert await rd.open() is rd
-    state = rd.require_state()
+    state = rd.state
     assert (state.client, state.id, state.sn, state.fw, state.model) == (
         client,
         60065,
@@ -99,7 +99,7 @@ async def test_read_empty_generator_does_no_io() -> None:
 
 async def test_read_all_readable_fields_via_generator() -> None:
     async with Riden(FakeClient()) as rd:
-        layout = rd.require_state().layout
+        layout = rd.state.layout
         readable = [
             field for field in Field if layout.registers[field].read is not None
         ]
@@ -226,15 +226,26 @@ async def test_write_before_open_fails() -> None:
         await rd.write({Field.V_SET: 12.5})
 
 
+async def test_is_open_reflects_lifecycle() -> None:
+    rd = Riden(FakeClient())
+    assert not rd.is_open
+
+    await rd.open()
+    assert rd.is_open
+
+    await rd.close()
+    assert not rd.is_open
+
+
 async def test_close_closes_client_and_is_idempotent() -> None:
     client = FakeClient()
     rd = Riden(client)
     await rd.open()
     await rd.close()
     await rd.close()
-    assert rd.state is None
+    assert rd._state is None
     with pytest.raises(RuntimeError, match="not initialized"):
-        _ = rd.require_state()
+        _ = rd.state
     assert client.closed
 
 
@@ -244,9 +255,9 @@ async def test_open_failure_closes_client() -> None:
     rd = Riden(client)
     with pytest.raises(RuntimeError, match="boom"):
         await rd.open()
-    assert rd.state is None
+    assert rd._state is None
     with pytest.raises(RuntimeError, match="not initialized"):
-        _ = rd.require_state()
+        _ = rd.state
     assert client.closed
 
 
@@ -256,15 +267,15 @@ async def test_open_unknown_model_fails_and_closes_client() -> None:
     rd = Riden(client)
     with pytest.raises(LookupError, match="unknown Riden model code: 1"):
         await rd.open()
-    assert rd.state is None
+    assert rd._state is None
     assert client.closed
 
 
 async def test_context_manager_closes_client() -> None:
     client = FakeClient()
     async with Riden(client) as rd:
-        assert rd.state is not None
-    assert rd.state is None
+        assert rd._state is not None
+    assert rd._state is None
     assert client.closed
 
 
@@ -627,7 +638,7 @@ async def test_base_preset_ignores_virtual_range() -> None:
 async def test_connect_accepts_a_prebuilt_client() -> None:
     client = FakeClient()
     async with Riden.connect(client) as rd:
-        assert rd.require_state().client is client
+        assert rd.state.client is client
 
 
 async def test_multiple_clients_can_run_concurrently() -> None:
@@ -655,7 +666,7 @@ async def test_connect_failure_disconnects_client() -> None:
     rd = Riden(client)
     with pytest.raises(RuntimeError, match="no link"):
         await rd.open()
-    assert rd.state is None
+    assert rd._state is None
     assert client.closed
 
 
@@ -673,16 +684,16 @@ async def test_reopen_after_close() -> None:
 
 def test_connect_returns_a_prebuilt_client() -> None:
     fake = cast(ModbusClient, object())
-    assert Riden.connect(fake).client is fake
+    assert Riden.connect(fake)._client is fake
 
 
 def test_connect_builds_ble_without_io() -> None:
-    client = Riden.connect("bt://AA:BB:CC:DD:EE:FF", timeout=0.5).client
+    client = Riden.connect("bt://AA:BB:CC:DD:EE:FF", timeout=0.5)._client
     assert isinstance(client, AsyncModbusClient)
 
 
 def test_connect_builds_serial_without_io() -> None:
-    client = Riden.connect("/dev/ttyUSB0", baudrate=9600, timeout=0.5).client
+    client = Riden.connect("/dev/ttyUSB0", baudrate=9600, timeout=0.5)._client
     assert isinstance(client, AsyncModbusClient)
 
 
@@ -692,11 +703,11 @@ def test_connect_accepts_a_bledevice() -> None:
         "RK6006",
         {"path": "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF", "props": {}},
     )
-    client = Riden.connect(device, timeout=0.5, connect_timeout=3).client
+    client = Riden.connect(device, timeout=0.5, connect_timeout=3)._client
     assert isinstance(client, AsyncModbusClient)
 
 
 def test_connect_wraps_a_prebuilt_ble_transport() -> None:
     transport = BleTransport("AA:BB:CC:DD:EE:FF", timeout=0.5)
-    client = Riden.connect(transport).client
+    client = Riden.connect(transport)._client
     assert isinstance(client, AsyncModbusClient)

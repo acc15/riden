@@ -15,12 +15,12 @@ async def measure_perf(rd: Riden, fn) -> None:
 
 
 async def single_long_read(rd: Riden) -> None:
-    layout = rd.require_state().layout
+    layout = rd.state.layout
     print(
         await rd.read(
             f
             for f in layout.fields()
-            if (located := layout.resolve(f)) is not None and located.reg.read is not None
+            if (located := layout.find(f)) is not None and located.reg.read is not None
         )
     )
 

@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import pytest
 
-from riden.field import Field, PresetField, PresetParam, flatten_fields, merge_fields, ref
+from riden.field import Field, PresetField, PresetParam, flatten_fields, merge_fields, parse_field
 
 
 def test_field_str() -> None:
@@ -62,24 +62,24 @@ def test_merge_fields_without_mappings_is_empty() -> None:
 
 
 def test_field_ref_parses_global_and_preset_names() -> None:
-    assert ref("v_set") is Field.V_SET
-    assert ref("m1_i_range") == PresetField(1, PresetParam.I_RANGE)
-    assert ref(Field.V) is Field.V
-    assert ref(PresetField(1, PresetParam.V)) == "m1_v"
+    assert parse_field("v_set") is Field.V_SET
+    assert parse_field("m1_i_range") == PresetField(1, PresetParam.I_RANGE)
+    assert parse_field(Field.V) is Field.V
+    assert parse_field(PresetField(1, PresetParam.V)) == "m1_v"
 
 
 def test_field_ref_rejects_bare_preset_param() -> None:
     with pytest.raises(TypeError, match="not a field"):
-        ref(cast(Any, PresetParam.V))
+        parse_field(cast(Any, PresetParam.V))
 
 
 def test_flatten_fields_accepts_field_refs() -> None:
-    field = ref(Field.V)
+    field = parse_field(Field.V)
     assert list(flatten_fields([field, [field]])) == [field, field]
 
 
 def test_merge_fields_accepts_field_ref_keys() -> None:
-    field = ref(Field.V)
+    field = parse_field(Field.V)
     merged = merge_fields({field: 1.0})
     assert merged[field] == 1.0
     assert next(iter(merged)) is field

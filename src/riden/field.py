@@ -154,15 +154,28 @@ _PRESET_RE = re.compile(
     re.IGNORECASE,
 )
 
-type FieldRef = Field | PresetField
+type FieldAny = Field | PresetField
 """A normalized reference: a global field or a concrete preset field."""
 
-type FieldLike = str | FieldRef
+type FieldLike = str | FieldAny
 """A field as accepted by the public API: a name or a typed field object."""
 
 
-def ref(value: FieldLike) -> FieldRef:
-    """Normalize a field name or field object to a :class:`FieldRef`."""
+type FieldMapping = (
+    Mapping[str, Any]
+    | Mapping[Field, Any]
+    | Mapping[PresetField, Any]
+    | Mapping[FieldAny, Any]
+)
+"""Field names or field objects mapped to their values.
+
+The union is explicit because ``Mapping`` is invariant in its key type: a
+``dict[Field, Any]`` is not assignable to ``Mapping[str, Any]``.
+"""
+
+
+def parse_field(value: FieldLike) -> FieldAny:
+    """Normalize a field name or field object to a :class:`FieldAny`."""
     if isinstance(value, (PresetField, Field)):
         return value
     if isinstance(value, str):
@@ -172,25 +185,12 @@ def ref(value: FieldLike) -> FieldRef:
     raise TypeError(f"not a field: {value!r}")
 
 
-type FieldMapping = (
-    Mapping[str, Any]
-    | Mapping[Field, Any]
-    | Mapping[PresetField, Any]
-    | Mapping[FieldRef, Any]
-)
-"""Field names or field objects mapped to their values.
-
-The union is explicit because ``Mapping`` is invariant in its key type: a
-``dict[Field, Any]`` is not assignable to ``Mapping[str, Any]``.
-"""
-
-
 def flatten_fields(
     fields: Iterable[FieldLike | Iterable[FieldLike]],
-) -> Iterable[FieldRef]:
+) -> Iterable[FieldAny]:
     for field in fields:
         if isinstance(field, str):
-            yield ref(field)
+            yield parse_field(field)
         elif isinstance(field, Iterable):
             yield from flatten_fields(field)
         else:
@@ -199,14 +199,14 @@ def flatten_fields(
 
 def merge_fields(
     *mappings: FieldMapping,
-) -> dict[FieldRef, Any]:
+) -> dict[FieldAny, Any]:
     """Merge field mappings into one, normalizing keys to :class:`FieldRef`.
 
     Later mappings override earlier ones.  ``Riden.write`` relies on that
     order: the values it is called with, then its keyword arguments.
     """
-    merged: dict[FieldRef, Any] = {}
+    merged: dict[FieldAny, Any] = {}
     for mapping in mappings:
         for field, value in mapping.items():
-            merged[ref(field)] = value
+            merged[parse_field(field)] = value
     return merged

@@ -1,48 +1,27 @@
 import asyncio
-import functools
-import operator
-from dataclasses import dataclass, fields
 
 import config
 
-from riden import Riden
+from riden import Preset, PresetParam, Riden
+from riden.field import merge_fields
+from riden.preset import PresetMapping
 
-DEFAULT_ADDRESS = "E1:F9:C6:24:71:C8"
-DEFAULT_URL = f"bt://{DEFAULT_ADDRESS}"
-
-@dataclass(frozen=True, slots=True)
-class Preset:
-    v: float
-    i: float = 0.01 # minimal current for safety
-    ovp: float = 62
-    ocp: float = 6.2
-    i_range: float = 0
-
-    def as_dict(self, index: int):
-        return { f"m{index}_{field.name}": getattr(self, field.name) for field in fields(self) }
-
-
-presets = [
-    Preset(3.3, 0.1),
-    Preset(5, 0.1),
-    Preset(9, 0.1),
-    Preset(12, 0.1),
-    Preset(15, 0.1),
-    Preset(20, 0.1),
-    Preset(24, 0.1),
-    Preset(28, 0.1),
-    Preset(48, 0.1),
-    Preset(60, 0.1),
-]
+# 3.3/5/9/12/24 — common logic, USB, battery and industrial voltages.
+# 15/20 — USB PD SPR; 28/36/48 — USB PD 3.1 EPR.
+VOLTAGES = (3.3, 5.0, 9.0, 12.0, 15.0, 20.0, 24.0, 28.0, 36.0, 48.0)
+preset_base: PresetMapping = {
+    PresetParam.I: 0.02,
+    PresetParam.OVP: 62,
+    PresetParam.OCP: 6.1,
+    PresetParam.I_RANGE: 0
+}
 
 async def main() -> None:
-    fields = functools.reduce(operator.or_, ( p.as_dict(i) for i, p in enumerate(presets)), {})
     async with Riden.connect(config.DEFAULT_URL) as rd:
-        await rd.write(fields)
-        # for i, p  in enumerate(presets):
-        #     await rd.write(p.as_dict(i))
-        print("Done!!! Check presets in settings!")
-        print("Values is ")
-        print(await rd.read(fields.keys()))
+        count = rd.state.layout.presets.count
+        await rd.write(merge_fields(*(Preset(i).params(preset_base, v = VOLTAGES[i]) for i in range(count))))
+        print(f"Configured {count} presets")
+        print(await rd.read(*(Preset(num) for num in range(count))))
+
 
 asyncio.run(main())

@@ -18,7 +18,7 @@ from tmodbus.transport import AsyncBaseTransport
 from tmodbus.transport.async_smart import AsyncSmartTransport
 
 from .ble import BleTransport
-from .field import Field, FieldLike, FieldMapping, FieldRef, flatten_fields, merge_fields
+from .field import Field, FieldAny, FieldLike, FieldMapping, flatten_fields, merge_fields
 from .layout import Layout
 from .model import Model
 from .register import Registers
@@ -77,12 +77,12 @@ class Riden:
         layout: Layout
 
     def __init__(self, client: ModbusClient):
-        self.client = client
-        self.state: Riden.State | None = None
+        self._client = client
+        self._state: Riden.State | None = None
 
-    def require_state(self) -> Riden.State:
-        state = self.state
-        if state is None:
+    @property
+    def state(self) -> Riden.State:
+        if (state := self._state) is None:
             raise RuntimeError("Riden is not initialized")
         return state
 
@@ -156,13 +156,13 @@ class Riden:
         return cls(port)
 
     async def open(self) -> Self:
-        if self.state is not None:
+        if self._state is not None:
             return self
 
         try:
-            await self.client.connect()
+            await self._client.connect()
             # Identification is I/O, so it belongs to open(), not __init__.
-            raw = await self.client.read_holding_registers(0, 4)
+            raw = await self._client.read_holding_registers(0, 4)
             model = Model.find(raw[0])
             layout = model.value.layout()
             decoded = layout.decode(
@@ -172,8 +172,8 @@ class Riden:
                 tuple(raw), 
                 0
             )
-            self.state = Riden.State(
-                client=self.client,
+            self._state = Riden.State(
+                client=self._client,
                 id=decoded[Field.ID],
                 sn=decoded[Field.SN],
                 fw=decoded[Field.FW],
@@ -183,15 +183,15 @@ class Riden:
         except BaseException:
             # __aexit__ is not called when __aenter__ raises.
             with contextlib.suppress(Exception):
-                await self.client.disconnect()
+                await self._client.disconnect()
             raise
         return self
 
     async def _read(
         self,
-        fields: Iterable[FieldRef],
-        supplied: Mapping[FieldRef, Any],
-    ) -> dict[FieldRef, Any]:
+        fields: Iterable[FieldAny],
+        supplied: Mapping[FieldAny, Any],
+    ) -> dict[FieldAny, Any]:
         """Decode ``fields`` and their transitive dependencies.
 
         The result is keyed by :class:`FieldRef`.  ``supplied`` seeds the
@@ -199,7 +199,7 @@ class Riden:
         own dependencies are read, and they are available to the codecs of
         their dependents.  Every other dependency is read and decoded first.
         """
-        state = self.require_state()
+        state = self.state
         layout = state.layout
 
         # Dependencies are decoded before their dependents; unsupported
@@ -263,7 +263,7 @@ class Riden:
         field is passed for writing too, the written value wins.  Values are
         semantic, and the caller is responsible for their correctness.
         """
-        state = self.require_state()
+        state = self.state
         layout = state.layout
 
         updates = merge_fields(*values, fields)
@@ -293,20 +293,27 @@ class Riden:
             await state.client.write_multiple_registers(start, list(regs))
 
     def identity(self) -> str:
-        state = self.require_state()
+        state = self.state
         return f"model={state.model} type={state.id} sn={state.sn:08X} fw={state.fw:.2f}"
 
+    @property
+    def is_open(self) -> bool:
+        """Whether the client has been opened and not closed since.
+
+        This is a local lifecycle flag, not a live transport check:
+        automatic reconnect may repair the link without changing it.
+        """
+        return self._state is not None
+
     async def close(self) -> None:
-        state = self.state
-        if state is None:
+        if (state := self._state) is None:
             return
-        self.state = None
+        self._state = None
         await state.client.disconnect()
 
     @override
     def __repr__(self) -> str:
-        state = self.state
-        if state is None:
+        if (state := self._state) is None:
             return f"{type(self).__name__}(closed)"
         return f"{type(self).__name__}({state.model.name})"
 

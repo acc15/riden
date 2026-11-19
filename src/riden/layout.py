@@ -3,12 +3,13 @@
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
+from functools import reduce
 from graphlib import CycleError, TopologicalSorter
 from types import MappingProxyType
 from typing import Any
 
-from .field import Field, FieldRef, PresetField, PresetParam
-from .register import LocatedRegister, Register, Registers, RegRead, RegWrite
+from .field import Field, FieldAny, PresetField, PresetParam
+from .register import DepTarget, LocatedRegister, Register, Registers, RegRead, RegWrite
 
 
 def _ordered[Node](
@@ -49,14 +50,14 @@ class PresetLayout:
             default=0,
         )
 
-    def resolve(self, field: PresetField) -> LocatedRegister | None:
-        if not 0 <= field.num < self.count:
+    def find_addr(self, field: PresetField) -> int | None:
+        if not 0 <= field.num < self.count or (register := self.template.get(field.param)) is None:
             return None
-        register = self.template.get(field.param)
-        if register is None:
-            return None
-        addr = self.base + field.num * self.stride + register.addr
-        return LocatedRegister(addr, register)
+        return self.base + field.num * self.stride + register.addr
+
+    def find(self, field: PresetField) -> LocatedRegister | None:
+        addr = self.find_addr(field)
+        return None if addr is None else LocatedRegister(addr, self.template[field.param])
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -73,58 +74,60 @@ class Layout:
     registers: Mapping[Field, Register]
     presets: PresetLayout = PresetLayout()
 
-    def resolve(self, field: FieldRef) -> LocatedRegister | None:
+    def find(self, field: FieldAny) -> LocatedRegister | None:
         if isinstance(field, PresetField):
-            return self.presets.resolve(field)
+            return self.presets.find(field)
         register = self.registers.get(field)
         return None if register is None else LocatedRegister(register.addr, register)
 
-    def addr(self, field: FieldRef) -> int:
-        located = self.resolve(field)
-        if located is None:
+    def resolve(self, field: FieldAny) -> LocatedRegister:
+        if (located := self.find(field)) is None:
             raise KeyError(field.value)
-        return located.addr
+        return located
 
-    def fields(self) -> Iterator[FieldRef]:
+    def find_addr(self, field: FieldAny) -> int | None:
+        if isinstance(field, PresetField):
+            return self.presets.find_addr(field)
+        register = self.registers.get(field)
+        return None if register is None else register.addr
+
+    def addr(self, field: FieldAny) -> int:
+        if (addr := self.find_addr(field)) is None:
+            raise KeyError(field.value)
+        return addr
+
+    def fields(self) -> Iterator[FieldAny]:
         """Iterate over every field in the layout, including all presets."""
         yield from self.registers
         for num in range(self.presets.count):
             for param in self.presets.template:
                 yield PresetField(num, param)
 
-    def _target(self, ref: FieldRef, target: Field | PresetField | PresetParam) -> FieldRef:
+    def dep_target(self, ref: FieldAny, target: DepTarget) -> FieldAny:
         if isinstance(target, PresetParam):
             if not isinstance(ref, PresetField):
                 raise TypeError("relative preset dependency outside a preset")
             return PresetField(ref.num, target)
         return target
 
-    def deps(self, field: FieldRef) -> Mapping[Field, FieldRef]:
+    def deps(self, field: FieldAny) -> Mapping[Field, FieldAny]:
         """Return a field's dependencies with preset-relative targets resolved."""
         located = self.resolve(field)
-        if located is None:
-            raise KeyError(field.value)
-        return {
-            alias: self._target(field, target)
-            for alias, target in located.reg.deps.items()
-        }
-
-    def dependencies(self, field: FieldRef) -> frozenset[FieldRef]:
-        return frozenset(self.deps(field).values())
+        return {alias: self.dep_target(field, target) for alias, target in located.reg.deps.items()}
 
     def make_deps(
         self,
-        field: FieldRef,
-        values: Mapping[FieldRef, Any],
+        field: FieldAny,
+        values: Mapping[FieldAny, Any],
     ) -> dict[Field, Any]:
         """Return the dependency mapping a codec is allowed to see."""
         return {alias: values[target] for alias, target in self.deps(field).items()}
 
     def dependency_order(
         self,
-        fields: Iterable[FieldRef],
-        supplied: AbstractSet[FieldRef] = frozenset(),
-    ) -> list[FieldRef]:
+        fields: Iterable[FieldAny],
+        supplied: AbstractSet[FieldAny] = frozenset(),
+    ) -> list[FieldAny]:
         """Return ``fields`` plus their transitive dependencies, dependencies first.
 
         The order is what decoding needs: a codec can only look at fields that
@@ -138,8 +141,8 @@ class Layout:
         itself requested still gets its direct dependencies collected, because
         it is encoded and its codec may need them.
         """
-        graph: dict[FieldRef, set[FieldRef]] = {}
-        seen: set[FieldRef] = set()
+        graph: dict[FieldAny, set[FieldAny]] = {}
+        seen: set[FieldAny] = set()
         supplied_refs = set(supplied)
         stack = list(fields)
         while stack:
@@ -148,12 +151,11 @@ class Layout:
                 continue
             seen.add(field)
 
-            located = self.resolve(field)
-            if located is None:
+            if self.find(field) is None:
                 raise ValueError(f"field {field.value} is not supported")
-            deps = self.dependencies(field)
+            deps = self.deps(field).values()
             for dep in deps:
-                if self.resolve(dep) is None:
+                if self.find(dep) is None:
                     raise ValueError(
                         f"field {dep.value} is not supported (required by {field.value})"
                     )
@@ -164,7 +166,7 @@ class Layout:
 
         return _ordered(graph, lambda field: field.value)
 
-    def register_span(self, fields: Iterable[FieldRef]) -> tuple[int, int] | None:
+    def register_span(self, fields: Iterable[FieldAny]) -> tuple[int, int] | None:
         """Return the ``(start, count)`` span covering ``fields``.
 
         Virtual fields have size 0 and do not widen the span.  When every
@@ -174,35 +176,31 @@ class Layout:
         125 registers and a write at 123, and tmodbus reports the error
         itself.
         """
-        merged: tuple[int, int] | None = None
-        for field in fields:
-            located = self.resolve(field)
-            if located is None:
-                raise KeyError(field.value)
-            if located.reg.size == 0:
-                continue
-            start = located.addr
-            end = start + located.reg.size
-            merged = (
-                (start, end)
-                if merged is None
-                else (min(merged[0], start), max(merged[1], end))
-            )
+        merged = reduce(
+            lambda left, right: right if left is None else (
+                min(left[0], right[0]),
+                max(left[1], right[1]),
+            ),
+            (
+                (located.addr, located.addr + located.reg.size)
+                for field in fields
+                if (located := self.resolve(field)).reg.size > 0
+            ),
+            None,
+        )
         return None if merged is None else (merged[0], merged[1] - merged[0])
 
-    def readers(self, fields: Iterable[FieldRef]) -> dict[FieldRef, RegRead]:
+    def readers(self, fields: Iterable[FieldAny]) -> dict[FieldAny, RegRead]:
         """Collect the read codecs for ``fields``, validating readability.
 
         Every field must be readable; otherwise a ``ValueError`` listing all
         unreadable fields is raised before any I/O.  ``fields`` are assumed to
         be supported (use :meth:`dependency_order` first).
         """
-        result: dict[FieldRef, RegRead] = {}
+        result: dict[FieldAny, RegRead] = {}
         not_readable: list[str] = []
         for ref in fields:
             located = self.resolve(ref)
-            if located is None:
-                raise KeyError(ref.value)
             read = located.reg.read
             if read is None:
                 not_readable.append(ref.value)
@@ -214,11 +212,11 @@ class Layout:
 
     def decode(
         self,
-        readers: Mapping[FieldRef, RegRead],
+        readers: Mapping[FieldAny, RegRead],
         regs: Registers,
         start: int,
-        initial: Mapping[FieldRef, Any] = MappingProxyType({}),
-    ) -> dict[FieldRef, Any]:
+        initial: Mapping[FieldAny, Any] = MappingProxyType({}),
+    ) -> dict[FieldAny, Any]:
         """Decode already fetched registers into field values.
 
         ``readers`` must be collected from fields already in dependency order;
@@ -228,11 +226,9 @@ class Layout:
         the seeded value.  Both the input and the result are keyed by
         :class:`FieldRef`; the public ``str`` names are applied by the client.
         """
-        values: dict[FieldRef, Any] = dict(initial)
+        values: dict[FieldAny, Any] = dict(initial)
         for field, read in readers.items():
             located = self.resolve(field)
-            if located is None:
-                raise KeyError(field.value)
             if located.reg.size == 0:
                 raw: Registers = ()
             else:
@@ -241,18 +237,18 @@ class Layout:
             values[field] = read(raw, self.make_deps(field, values))
         return values
 
-    def writers(self, fields: Iterable[FieldRef]) -> dict[FieldRef, RegWrite]:
+    def writers(self, fields: Iterable[FieldAny]) -> dict[FieldAny, RegWrite]:
         """Collect the write codecs for ``fields``, validating support/writability.
 
         Unsupported fields raise ``ValueError`` first, then non-writable ones,
         matching the original behaviour.  ``fields`` are validated against the
         layout's register map.
         """
-        result: dict[FieldRef, RegWrite] = {}
+        result: dict[FieldAny, RegWrite] = {}
         unsupported: list[str] = []
         not_writable: list[str] = []
         for ref in fields:
-            located = self.resolve(ref)
+            located = self.find(ref)
             if located is None:
                 unsupported.append(ref.value)
             elif located.reg.write is None:
@@ -267,10 +263,10 @@ class Layout:
 
     def encode(
         self,
-        writers: Mapping[FieldRef, RegWrite],
-        updates: Mapping[FieldRef, Any],
-        dependencies: Mapping[FieldRef, Any],
-    ) -> dict[FieldRef, Registers]:
+        writers: Mapping[FieldAny, RegWrite],
+        updates: Mapping[FieldAny, Any],
+        dependencies: Mapping[FieldAny, Any],
+    ) -> dict[FieldAny, Registers]:
         """Encode supplied fields into register blocks.
 
         ``dependencies`` are decoded values keyed by :class:`FieldRef`; they
@@ -279,13 +275,10 @@ class Layout:
         and size/range checks happen here, before anything is written.  Virtual
         fields are skipped.
         """
-        values: dict[FieldRef, Any] = {**dependencies, **updates}
-        encoded: dict[FieldRef, Registers] = {}
+        values: dict[FieldAny, Any] = {**dependencies, **updates}
+        encoded: dict[FieldAny, Registers] = {}
         for field, value in updates.items():
-            located = self.resolve(field)
-            if located is None:
-                raise KeyError(field.value)
-            register = located.reg
+            register = self.resolve(field).reg
             try:
                 regs = writers[field](value, self.make_deps(field, values))
             except ValueError as exc:
@@ -306,9 +299,9 @@ class Layout:
 
     def _write_predecessors(
         self,
-        field: FieldRef,
-        encoded: AbstractSet[FieldRef],
-    ) -> set[FieldRef]:
+        field: FieldAny,
+        encoded: AbstractSet[FieldAny],
+    ) -> set[FieldAny]:
         """Return the written fields that ``field`` transitively depends on.
 
         Virtual fields are never encoded, but they can have real dependencies:
@@ -316,9 +309,9 @@ class Layout:
         unencoded fields instead of stopping at them, so the range is still
         ordered before the current it scales.
         """
-        result: set[FieldRef] = set()
-        seen: set[FieldRef] = set()
-        stack = list(self.dependencies(field))
+        result: set[FieldAny] = set()
+        seen: set[FieldAny] = set()
+        stack = list(self.deps(field).values())
         while stack:
             dep = stack.pop()
             if dep in seen:
@@ -327,14 +320,14 @@ class Layout:
             if dep in encoded:
                 result.add(dep)
             else:
-                located = self.resolve(dep)
+                located = self.find(dep)
                 if located is not None:
-                    stack.extend(self.dependencies(dep))
+                    stack.extend(self.deps(dep).values())
         return result
 
     def write_blocks(
         self,
-        encoded: Mapping[FieldRef, Registers],
+        encoded: Mapping[FieldAny, Registers],
     ) -> list[tuple[int, Registers]]:
         """Merge encoded fields into contiguous write transactions.
 
@@ -346,20 +339,18 @@ class Layout:
         links a current to the written range it depends on.
         """
         blocks: list[tuple[int, list[int]]] = []
-        block_of: dict[FieldRef, int] = {}
-        for field in sorted(encoded, key=self.addr):
-            located = self.resolve(field)
-            if located is None:
-                raise KeyError(field.value)
+        block_of: dict[FieldAny, int] = {}
+        ordered = sorted(((self.addr(field), field) for field in encoded), key=lambda v: v[0])
+        for addr, field in ordered:
             regs = encoded[field]
             if blocks:
                 start, values = blocks[-1]
-                offset = located.addr - start
+                offset = addr - start
                 if offset <= len(values):
                     values[offset : offset + len(regs)] = regs
                     block_of[field] = len(blocks) - 1
                     continue
-            blocks.append((located.addr, list(regs)))
+            blocks.append((addr, list(regs)))
             block_of[field] = len(blocks) - 1
 
         encoded_fields = frozenset(encoded)
