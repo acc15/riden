@@ -6,11 +6,19 @@ from types import MappingProxyType
 from typing import Any
 
 from .field import Field
+from .preset import PresetField, PresetParam
 
 type Registers = tuple[int, ...]
 
 type RegRead = Callable[[Registers, Mapping[Field, Any]], Any]
 type RegWrite = Callable[[Any, Mapping[Field, Any]], Registers]
+
+type DepTarget = Field | PresetField | PresetParam
+"""A dependency target.
+
+``Field`` and ``PresetField`` are absolute; ``PresetParam`` is relative to
+the preset whose template declares it.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,19 +33,21 @@ class Register:
     the value codecs; ``None`` means the field is not readable or not writable
     respectively, virtual or not.
 
-    ``deps`` maps the name a codec sees to the field the value is read from:
-    ``{Field.I_RANGE: Field.M1_I_RANGE}`` lets one current codec serve the
-    output and every preset by asking for ``deps[Field.I_RANGE]``.  Keys are
-    codec-side aliases, values are the real fields that must be decoded first.
-    The base map has no dependencies; the RD6012P map uses them for current
-    ranges.
+    In a layout's direct register map ``addr`` is absolute.  In a
+    :class:`riden.layout.PresetLayout` template it is relative to the start of
+    one preset.
+
+    ``deps`` maps the name a codec sees to the field the value is read from.
+    Keys are codec-side aliases, values are absolute fields or a
+    :class:`riden.preset.PresetParam` meaning "the same preset's parameter".
+    The layout resolves relative targets before calling a codec.
     """
 
     addr: int
     size: int
     read: RegRead | None = None
     write: RegWrite | None = None
-    deps: Mapping[Field, Field] = MappingProxyType({})
+    deps: Mapping[Field, DepTarget] = MappingProxyType({})
 
     @property
     def is_readable(self) -> bool:
@@ -47,18 +57,11 @@ class Register:
     def is_writable(self) -> bool:
         return self.write is not None
 
-    @property
-    def dependencies(self) -> frozenset[Field]:
-        """Real fields that must be decoded before this one."""
-        return frozenset(self.deps.values())
 
-    def make_deps(self, values: Mapping[Field, Any]) -> dict[Field, Any]:
-        """Return the dependency mapping a codec is allowed to see.
 
-        ``values`` is keyed by :class:`Field`; only fields declared in
-        ``deps`` are copied, so a codec can never depend on values it did not
-        declare, and each one is aliased to the key the codec asks for.
-        Dependencies are decoded first, so every one of them is already in
-        ``values``.
-        """
-        return {name: values[field] for name, field in self.deps.items()}
+@dataclass(frozen=True, slots=True)
+class LocatedRegister:
+    """A register together with its absolute address in one layout."""
+
+    addr: int
+    reg: Register

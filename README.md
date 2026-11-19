@@ -106,7 +106,9 @@ again. `close()` is idempotent.
 
 USB works only when the USB interface is selected in the device menu.
 
-Field names are case-insensitive, so `"V"` and `"v"` refer to the same field.
+Field names are case-insensitive on input, so `"V"`, `"v"`, `"M1_V"` and
+`"m1_v"` all refer to the same field.  Results are keyed by the canonical
+lowercase name (`"v"`, `"m1_v"`), not by the spelling that was passed in.
 
 ## Several supplies in one loop
 
@@ -226,27 +228,28 @@ automatic reconnect opens it again on the next transaction.
 
 Models expose their nominal limits, raw scales and write tolerances as
 ordinary read-only fields. They are virtual: reading them costs no I/O.
-The exception is RD6012P, where `I_MAX`/`I_SCALE` and
-`M*_I_MAX`/`M*_I_SCALE` read the current range registers they follow; see
-the RD6012P section below.
+The exception is RD6012P, where `I_MAX`/`I_SCALE` and the per-preset
+`m*_i_max`/`m*_i_scale` fields read the current range registers they follow;
+see the RD6012P section below.
 
 | Field | Meaning |
 |-------|---------|
 | `V_MAX` | nominal voltage limit, V |
 | `V_SCALE` | raw units per volt (`1000` means 1 mV) |
-| `V_TOLERANCE` | extra volts accepted by `V_SET` and `M*_V` |
-| `OVP_TOLERANCE` | extra volts accepted by `M*_OVP` |
+| `V_TOLERANCE` | extra volts accepted by `V_SET` and preset V |
+| `OVP_TOLERANCE` | extra volts accepted by preset OVP |
 | `I_MAX` | current limit of the selected output range, A |
 | `I_SCALE` | raw units per ampere of the selected output range |
-| `I_TOLERANCE` | extra amperes accepted by `I_SET` and `M*_I` |
-| `OCP_TOLERANCE` | extra amperes accepted by `M*_OCP` |
+| `I_TOLERANCE` | extra amperes accepted by `I_SET` and preset I |
+| `OCP_TOLERANCE` | extra amperes accepted by preset OCP |
 | `P_MAX` | nominal rated power, W (`v_max * max(i_max)`) |
 | `P_SCALE` | raw units per watt |
-| `M*_I_MAX`, `M*_I_SCALE` | current limit and scale of preset M* |
+| `m*_i_max`, `m*_i_scale` | current limit and scale of one preset |
 
-`I_MAX`/`I_SCALE` follow the output range, while each `M*` pair follows its
-preset's own range. `P_MAX` is nominal and does not change with the range: for
-RD6012P it is 720 W even in the 6 A range.
+`I_MAX`/`I_SCALE` follow the output range, while each preset's
+`m*_i_max`/`m*_i_scale` pair follows that preset's own range. `P_MAX` is
+nominal and does not change with the range: for RD6012P it is 720 W even in
+the 6 A range.
 
 Tolerance is the margin the device accepts above the nominal limit for a
 write, not measurement accuracy. The actual encoding limits are
@@ -267,6 +270,28 @@ before any I/O. They can still be supplied in `deps` to override how another
 field is decoded or encoded; as with any `deps`, the caller is responsible for
 the values.
 
+## Preset fields
+
+Preset fields can be named as strings (`"m1_v"`, `"m1_i_range"`) or built
+from a preset number and a `PresetParam`:
+
+```python
+from riden import PresetField, PresetParam
+
+v = PresetField(1, PresetParam.V)       # m1_v
+i = PresetField(1, PresetParam.I)       # m1_i
+ovp = PresetField(1, PresetParam.OVP)   # m1_ovp
+
+# A PresetField is a str, so it indexes the name-keyed result directly.
+value = (await rd.read(v))[v]
+
+await rd.write({i: 1.0, ovp: 60.0})
+```
+
+`PresetParam` is the parameter inside a preset (`V`, `I`, `OVP`, `OCP`,
+`I_RANGE`, `I_MAX`, `I_SCALE`); `PresetField` adds the preset number. Both
+forms work in `read()`, `write()` and `deps=`.
+
 ## RD6012P / RD6012PW current range
 
 These models have two current ranges, switched on the front panel: 6 A with
@@ -274,10 +299,10 @@ These models have two current ranges, switched on the front panel: 6 A with
 reported in register 20 (`Field.I_RANGE`: `0` is 6 A, otherwise 12 A), and
 the library scales every output current by the range that is actually
 selected: `10000` for 6 A, `1000` for 12 A. The selected limit and scale are
-also available as `I_MAX`/`I_SCALE`, and per preset as
-`M*_I_MAX`/`M*_I_SCALE`. Reading `I_MAX`/`I_SCALE` reads `I_RANGE` (register
-20) in the same transaction; `M*_I_MAX`/`M*_I_SCALE` read that preset's
-`M*_I_RANGE` (register 84 for M0, 89 for M1, and so on). On models without a
+also available as `I_MAX`/`I_SCALE`, and per preset as `m*_i_max`/`m*_i_scale`.
+Reading `I_MAX`/`I_SCALE` reads `I_RANGE` (register 20) in the same
+transaction; a preset's `m*_i_max`/`m*_i_scale` reads that preset's
+`m*_i_range` (register 84 for M0, 89 for M1, and so on). On models without a
 range switch these fields are constants and need no I/O.
 
 Reading a current also reads the range, in the same transaction:
@@ -358,15 +383,15 @@ registers instead of four (V, I, OVP, OCP, I_RANGE):
 | ...    |     |     |     |     |         |
 | M9     | 125 | 126 | 127 | 128 | 129     |
 
-`M*_I` and `M*_OCP` are scaled by their own `M*_I_RANGE`, so a complete
-preset is still one transaction and needs no reads:
+A preset's `m*_i` and `m*_ocp` are scaled by its own `m*_i_range`, so a
+complete preset is still one transaction and needs no reads:
 
 ```python
 # One write of five registers starting at 85
 await rd.write(m1_v=5.0, m1_i=1.0, m1_ovp=60.0, m1_ocp=1.0, m1_i_range=0)
 ```
 
-On models without a selectable range, `M0_I_RANGE`..`M9_I_RANGE` are virtual:
+On models without a selectable range, `m0_i_range`..`m9_i_range` are virtual:
 reading them returns `False`, and writing them is accepted but changes
 nothing. `I_RANGE` is a real register on all models; models without a range
 switch report `0`.

@@ -10,6 +10,7 @@ from tmodbus import AsyncModbusClient
 from riden.ble import BleTransport
 from riden.field import Field
 from riden.model import Model
+from riden.preset import PresetField, PresetParam
 from riden.riden import ModbusClient, Riden
 from tests.conftest import FakeClient, Op, Tx
 
@@ -81,6 +82,13 @@ async def test_read_accepts_mixed_iterables() -> None:
             "v_set", (name for name in ["sn"]), iter([Field.EN]), ("v_set",)
         )
     assert values == {Field.V_SET: 12.5, Field.SN: 7, Field.EN: True}
+
+
+async def test_read_accepts_field_string_and_preset_field() -> None:
+    preset = PresetField(1, PresetParam.V)
+    async with Riden(FakeClient()) as rd:
+        values = await rd.read(Field.V_SET, "en", preset)
+    assert values == {Field.V_SET: 12.5, Field.EN: True, preset: 0.0}
 
 
 async def test_read_empty_generator_does_no_io() -> None:
@@ -186,7 +194,7 @@ async def test_write_rejects_out_of_range_before_any_io() -> None:
 async def test_write_ovp_gets_two_volt_margin() -> None:
     client = FakeClient()
     async with Riden(client) as rd:
-        await rd.write({Field.M0_OVP: 62.0})
+        await rd.write({PresetField(0, PresetParam.OVP): 62.0})
     assert client.registers[82] == 62000
 
 
@@ -358,7 +366,7 @@ async def test_read_deps_accept_mixed_key_forms() -> None:
     client.registers[89] = 1
 
     values = await rd.read(
-        "i", "m1_i", deps={"i_range": 0, Field.M1_I_RANGE: 0}
+        "i", "m1_i", deps={"i_range": 0, PresetField(1, PresetParam.I_RANGE): 0}
     )
 
     assert values["i"] == pytest.approx(0.5)
@@ -603,7 +611,7 @@ async def test_base_preset_range_is_virtual() -> None:
     client = FakeClient()
     async with Riden(client) as rd:
         before = list(client.transactions)
-        assert await rd.read(Field.M1_I_RANGE) == {Field.M1_I_RANGE: False}
+        assert await rd.read(PresetField(1, PresetParam.I_RANGE)) == {PresetField(1, PresetParam.I_RANGE): False}
         assert client.transactions == before
 
         await rd.write(m1_i_range=1)

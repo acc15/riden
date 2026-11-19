@@ -18,7 +18,7 @@ from tmodbus.transport import AsyncBaseTransport
 from tmodbus.transport.async_smart import AsyncSmartTransport
 
 from .ble import BleTransport
-from .field import Field, FieldMapping, flatten_fields, merge_fields
+from .field import Field, FieldLike, FieldMapping, FieldRef, flatten_fields, merge_fields
 from .layout import Layout
 from .model import Model
 from .register import Registers
@@ -166,15 +166,19 @@ class Riden:
             model = Model.find(raw[0])
             layout = model.value.layout()
             decoded = layout.decode(
-                layout.readers(layout.dependency_order((Field.ID, Field.SN, Field.FW))), 
+                layout.readers(
+                    layout.dependency_order(
+                        (FieldRef(Field.ID), FieldRef(Field.SN), FieldRef(Field.FW))
+                    )
+                ),
                 tuple(raw), 
                 0
             )
             self.state = Riden.State(
                 client=self.client,
-                id=decoded[Field.ID],
-                sn=decoded[Field.SN],
-                fw=decoded[Field.FW],
+                id=decoded[FieldRef(Field.ID)],
+                sn=decoded[FieldRef(Field.SN)],
+                fw=decoded[FieldRef(Field.FW)],
                 model=model,
                 layout=layout,
             )
@@ -187,17 +191,17 @@ class Riden:
 
     async def _read(
         self,
-        state: Riden.State,
-        fields: Iterable[Field],
-        supplied: Mapping[Field, Any],
-    ) -> dict[Field, Any]:
+        fields: Iterable[FieldRef],
+        supplied: Mapping[FieldRef, Any],
+    ) -> dict[FieldRef, Any]:
         """Decode ``fields`` and their transitive dependencies.
 
-        The result is keyed by :class:`Field`.  ``supplied`` seeds the
+        The result is keyed by :class:`FieldRef`.  ``supplied`` seeds the
         decoder: fields named there are taken as-is, so neither they nor their
         own dependencies are read, and they are available to the codecs of
         their dependents.  Every other dependency is read and decoded first.
         """
+        state = self.require_state()
         layout = state.layout
 
         # Dependencies are decoded before their dependents; unsupported
@@ -219,7 +223,7 @@ class Riden:
 
     async def read(
         self,
-        *fields: str | Iterable[str],
+        *fields: FieldLike | Iterable[FieldLike],
         deps: FieldMapping = MappingProxyType({}),
     ) -> dict[str, Any]:
         """Return the requested fields, keyed by name.
@@ -234,7 +238,6 @@ class Riden:
         the caller is responsible for their correctness: a stale or wrong
         scale produces plausible-looking but wrong readings.
         """
-        state = self.require_state()
 
         # dict.fromkeys() flattens, normalizes and deduplicates in one pass,
         # while preserving the requested order.
@@ -243,7 +246,7 @@ class Riden:
             return {}
 
         supplied = merge_fields(deps)
-        values = await self._read(state, requested, supplied)
+        values = await self._read(requested, supplied)
 
         # Dependencies are not part of the result: only what was requested.
         return {field.value: values[field] for field in requested}
@@ -280,7 +283,7 @@ class Riden:
         # A codec is encoded with the fields it declares in deps.  Supplied
         # fields are taken as-is; everything else is read first, in one
         # transaction, together with its own transitive dependencies.
-        dependencies = await self._read(state, updates.keys(), supplied)
+        dependencies = await self._read(updates.keys(), supplied)
 
         # Encode and validate everything before touching the bus, so an invalid
         # value does not leave the device partially updated.

@@ -17,8 +17,9 @@ from typing import Any
 
 from .enums import Mode, Protection
 from .field import Field
-from .layout import Layout
-from .register import Register, Registers, RegRead
+from .layout import Layout, PresetLayout
+from .preset import PresetParam
+from .register import DepTarget, Register, Registers, RegRead
 
 # The device accepts a setpoint slightly above the nominal limit and silently
 # keeps the old value beyond it; these margins are part of the register map,
@@ -112,7 +113,7 @@ def riden_spec(
 
     The same values are exposed as virtual read-only fields: ``V_MAX``,
     ``V_SCALE``, ``I_MAX``, ``I_SCALE``, ``P_MAX``, ``P_SCALE`` and, per
-    preset, ``M*_I_MAX``/``M*_I_SCALE``.  The write margins are fields too:
+    preset, ``m*_i_max``/``m*_i_scale``.  The write margins are fields too:
     ``V_TOLERANCE``/``OVP_TOLERANCE`` and ``I_TOLERANCE``/``OCP_TOLERANCE``.
     They cost no I/O; the current ones follow the selected range, and
     ``P_MAX`` is the nominal ``v_max * max(i_max)``.
@@ -121,7 +122,7 @@ def riden_spec(
     range.  Then every current is decoded against the selected range, which
     the codec receives as ``Field.I_RANGE``: 0 picks the first entry, any
     non-zero value the second.  Such models report the per-preset range in
-    ``M*_I_RANGE`` and reserve a fifth register in each preset for it.
+    ``m*_i_range`` and reserve a fifth register in each preset for it.
     """
     i_maxes = (i_max,) if isinstance(i_max, int) else tuple(i_max)
     i_scales = (i_scale,) if isinstance(i_scale, int) else tuple(i_scale)
@@ -278,59 +279,69 @@ def riden_spec(
             Field.BACKLIGHT: Register(72, 1, read_single(int), write_int),
         }
 
-        stride = 5 if switched else 4
-        for n in range(10):
-            base = 80 + stride * n
-            # One current codec serves every preset: it asks for the global
-            # metadata fields and the map aliases them to this preset's own
-            # range.
-            preset_current_deps = MappingProxyType({
-                Field.I_MAX: Field(f"m{n}_i_max"),
-                Field.I_SCALE: Field(f"m{n}_i_scale"),
-                Field.I_TOLERANCE: Field.I_TOLERANCE,
-            })
-            preset_ocp_deps = MappingProxyType({
-                Field.I_MAX: Field(f"m{n}_i_max"),
-                Field.I_SCALE: Field(f"m{n}_i_scale"),
-                Field.I_TOLERANCE: Field.OCP_TOLERANCE,
-            })
-            preset_range_deps = MappingProxyType(
-                {Field.I_RANGE: Field(f"m{n}_i_range")} if switched else {}
-            )
-            fields[Field(f"m{n}_v")] = Register(
-                base, 1, read_v, write_voltage, deps=voltage_deps
-            )
-            fields[Field(f"m{n}_i")] = Register(
-                base + 1, 1, read_i, write_current, deps=preset_current_deps
-            )
-            fields[Field(f"m{n}_ovp")] = Register(
-                base + 2, 1, read_v, write_voltage, deps=ovp_deps
-            )
-            fields[Field(f"m{n}_ocp")] = Register(
-                base + 3, 1, read_i, write_current, deps=preset_ocp_deps
-            )
-            fields[Field(f"m{n}_i_max")] = Register(
-                0, 0, read_i_max, deps=preset_range_deps
-            )
-            fields[Field(f"m{n}_i_scale")] = Register(
-                0, 0, read_i_scale, deps=preset_range_deps
-            )
-            if switched:
-                fields[Field(f"m{n}_i_range")] = Register(base + 4, 1, read_single(bool), write_int)
-            else:
+        # One template serves every preset.  A PresetParam in deps means "the
+        # same preset's parameter"; Layout resolves it to a PresetField before
+        # a codec sees it.
+        preset_current_deps = MappingProxyType({
+            Field.I_MAX: PresetParam.I_MAX,
+            Field.I_SCALE: PresetParam.I_SCALE,
+            Field.I_TOLERANCE: Field.I_TOLERANCE,
+        })
+        preset_ocp_deps = MappingProxyType({
+            Field.I_MAX: PresetParam.I_MAX,
+            Field.I_SCALE: PresetParam.I_SCALE,
+            Field.I_TOLERANCE: Field.OCP_TOLERANCE,
+        })
+        preset_range_deps = MappingProxyType(
+            {Field.I_RANGE: PresetParam.I_RANGE} if switched else {}
+        )
+        preset_template = {
+            PresetParam.V: Register(0, 1, read_v, write_voltage, deps=voltage_deps),
+            PresetParam.I: Register(1, 1, read_i, write_current, deps=preset_current_deps),
+            PresetParam.OVP: Register(2, 1, read_v, write_voltage, deps=ovp_deps),
+            PresetParam.OCP: Register(3, 1, read_i, write_current, deps=preset_ocp_deps),
+            PresetParam.I_RANGE: (
+                Register(4, 1, read_single(bool), write_int)
+                if switched
                 # The model has no switchable range, but callers should not
                 # need a per-model code path: a zero-size field is virtual, so
                 # its codecs touch no register.
-                fields[Field(f"m{n}_i_range")] = Register(0, 0, read_const(False), write_off)
+                else Register(0, 0, read_const(False), write_off)
+            ),
+            PresetParam.I_MAX: Register(0, 0, read_i_max, deps=preset_range_deps),
+            PresetParam.I_SCALE: Register(0, 0, read_i_scale, deps=preset_range_deps),
+        }
 
         # A dependency the map cannot decode would otherwise fail at the first
         # read of that field; catch it when the map is built instead.
         for field, register in fields.items():
-            unsupported = register.dependencies - fields.keys()
+            unsupported = [dep for dep in register.deps.values() if dep not in fields]
             if unsupported:
-                names = ", ".join(dep.value for dep in sorted(unsupported))
+                names = ", ".join(sorted(str(dep) for dep in unsupported))
                 raise ValueError(f"field {field.value} depends on unsupported fields: {names}")
 
-        return Layout(MappingProxyType(fields))
+        for param, register in preset_template.items():
+            unsupported: list[DepTarget] = []
+            for dep in register.deps.values():
+                if isinstance(dep, PresetParam):
+                    if dep not in preset_template:
+                        unsupported.append(dep)
+                elif dep not in fields:
+                    unsupported.append(dep)
+            if unsupported:
+                names = ", ".join(sorted(str(dep) for dep in unsupported))
+                raise ValueError(
+                    f"preset field {param.value} depends on unsupported fields: {names}"
+                )
+
+        return Layout(
+            MappingProxyType(fields),
+            PresetLayout(
+                base=80,
+                count=10,
+                stride=PresetLayout.compute_stride(preset_template),
+                template=MappingProxyType(preset_template),
+            ),
+        )
 
     return layout

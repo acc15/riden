@@ -1,14 +1,18 @@
+import re
 from collections.abc import Iterable, Mapping
 from enum import StrEnum, auto
-from typing import Any, override
+from typing import Any, Self, override
+
+from .preset import PresetField, PresetParam
 
 
 class Field(StrEnum):
-    """Names of fields exposed by Riden devices.
+    """Names of global fields exposed by Riden devices.
 
     The enum only names fields.  Which register a field uses, how many
     registers it occupies and how it is encoded belongs to the model's
-    :class:`riden.spec.Spec`.
+    :class:`riden.spec.Spec`.  Preset fields are represented by
+    :class:`riden.preset.PresetField`, which adds the preset number.
     """
 
     ID = auto()
@@ -74,86 +78,6 @@ class Field(StrEnum):
     LANG = auto()
     BACKLIGHT = auto()
 
-    M0_V = auto()
-    M0_I = auto()
-    M0_OVP = auto()
-    M0_OCP = auto()
-    M0_I_RANGE = auto()
-    M0_I_MAX = auto()
-    M0_I_SCALE = auto()
-
-    M1_V = auto()
-    M1_I = auto()
-    M1_OVP = auto()
-    M1_OCP = auto()
-    M1_I_RANGE = auto()
-    M1_I_MAX = auto()
-    M1_I_SCALE = auto()
-
-    M2_V = auto()
-    M2_I = auto()
-    M2_OVP = auto()
-    M2_OCP = auto()
-    M2_I_RANGE = auto()
-    M2_I_MAX = auto()
-    M2_I_SCALE = auto()
-
-    M3_V = auto()
-    M3_I = auto()
-    M3_OVP = auto()
-    M3_OCP = auto()
-    M3_I_RANGE = auto()
-    M3_I_MAX = auto()
-    M3_I_SCALE = auto()
-
-    M4_V = auto()
-    M4_I = auto()
-    M4_OVP = auto()
-    M4_OCP = auto()
-    M4_I_RANGE = auto()
-    M4_I_MAX = auto()
-    M4_I_SCALE = auto()
-
-    M5_V = auto()
-    M5_I = auto()
-    M5_OVP = auto()
-    M5_OCP = auto()
-    M5_I_RANGE = auto()
-    M5_I_MAX = auto()
-    M5_I_SCALE = auto()
-
-    M6_V = auto()
-    M6_I = auto()
-    M6_OVP = auto()
-    M6_OCP = auto()
-    M6_I_RANGE = auto()
-    M6_I_MAX = auto()
-    M6_I_SCALE = auto()
-
-    M7_V = auto()
-    M7_I = auto()
-    M7_OVP = auto()
-    M7_OCP = auto()
-    M7_I_RANGE = auto()
-    M7_I_MAX = auto()
-    M7_I_SCALE = auto()
-
-    M8_V = auto()
-    M8_I = auto()
-    M8_OVP = auto()
-    M8_OCP = auto()
-    M8_I_RANGE = auto()
-    M8_I_MAX = auto()
-    M8_I_SCALE = auto()
-
-    M9_V = auto()
-    M9_I = auto()
-    M9_OVP = auto()
-    M9_OCP = auto()
-    M9_I_RANGE = auto()
-    M9_I_MAX = auto()
-    M9_I_SCALE = auto()
-
     @override
     @classmethod
     def _missing_(cls, value: object) -> Field | None:
@@ -162,33 +86,117 @@ class Field(StrEnum):
         return None
 
 
-type FieldMapping = Mapping[str, Any] | Mapping[Field, Any]
-"""Field names or :class:`Field` members mapped to their values.
+_PRESET_RE = re.compile(
+    r"m(\d+)_(i_range|i_max|i_scale|ovp|ocp|v|i)",
+    re.IGNORECASE,
+)
 
-Both forms are accepted because ``Mapping`` is invariant in its key type:
-``Field`` is a ``str`` subclass, but ``Mapping[Field | str, Any]`` collapses
-to ``Mapping[str, Any]`` and would reject a ``dict[Field, Any]``.
+class FieldRef:
+    """A reference to a global field or to a concrete preset field.
+
+    This is the normalized key used internally by the client and the layout.
+    It accepts the public field forms: a name, a :class:`Field` member or a
+    :class:`riden.preset.PresetField`.
+    """
+
+    __slots__ = ("target",)
+
+    target: Field | PresetField
+
+    def __new__(cls, value: FieldLike) -> Self:
+        if isinstance(value, cls):
+            return value
+        return super().__new__(cls)
+
+    def __init__(self, value: FieldLike):
+        if isinstance(value, FieldRef):
+            target = value.target
+        elif isinstance(value, PresetParam):
+            raise TypeError("PresetParam must be indexed: use PresetField")
+        elif isinstance(value, (PresetField, Field)):
+            target = value
+        elif isinstance(value, str):
+            target = (
+                PresetField(int(match[1]), match[2])
+                if (match := _PRESET_RE.fullmatch(value))
+                else Field(value)
+            )
+        else:
+            raise TypeError(f"not a field: {value!r}")
+        object.__setattr__(self, "target", target)
+
+    @override
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("FieldRef is immutable")
+
+    @property
+    def value(self) -> str:
+        return str(self.target)
+
+    @override
+    def __hash__(self) -> int:
+        return hash(self.target)
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, FieldRef):
+            return self.target == other.target
+        if isinstance(other, str):
+            return self.target == other
+        return NotImplemented
+
+    @override
+    def __str__(self) -> str:
+        return self.value
+
+    @override
+    def __repr__(self) -> str:
+        return f"FieldRef({self.target!r})"
+
+
+type FieldLike = str | Field | PresetField | FieldRef
+"""A field as accepted by the public API: a name or a typed field object."""
+
+
+type FieldMapping = (
+    Mapping[str, Any]
+    | Mapping[Field, Any]
+    | Mapping[PresetField, Any]
+    | Mapping[Field | PresetField, Any]
+    | Mapping[FieldRef, Any]
+)
+"""Field names or field objects mapped to their values.
+
+Keys are normalized through :class:`FieldRef`.  The union is explicit
+because ``Mapping`` is invariant in its key type: a ``dict[Field, Any]`` is
+not assignable to ``Mapping[str, Any]``.
 """
 
 
-def flatten_fields(fields: Iterable[str | Iterable[str]]) -> Iterable[Field]:
+def flatten_fields(
+    fields: Iterable[FieldLike | Iterable[FieldLike]],
+) -> Iterable[FieldRef]:
     for field in fields:
-        match field:
-            case Field(): yield field
-            case str(): yield Field(field)
-            case _: yield from flatten_fields(field)
+        if isinstance(field, PresetParam):
+            raise TypeError("PresetParam must be indexed: use PresetField")
+        if isinstance(field, FieldRef):
+            yield field
+        elif isinstance(field, str):
+            yield FieldRef(field)
+        else:
+            yield from flatten_fields(field)
 
 
 def merge_fields(
     *mappings: FieldMapping,
-) -> dict[Field, Any]:
-    """Merge field mappings into one, normalizing keys to :class:`Field`.
+) -> dict[FieldRef, Any]:
+    """Merge field mappings into one, normalizing keys to :class:`FieldRef`.
 
     Later mappings override earlier ones.  ``Riden.write`` relies on that
     order: the values it is called with, then its keyword arguments.
     """
-    merged: dict[Field, Any] = {}
+    merged: dict[FieldRef, Any] = {}
     for mapping in mappings:
         for field, value in mapping.items():
-            merged[Field(field)] = value
+            merged[FieldRef(field)] = value
     return merged

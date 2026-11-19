@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
 
-from riden.field import Field
+from riden.field import FieldRef
+from riden.layout import Layout
 from riden.register import Register, Registers, RegRead, RegWrite
 
 # Register map of a fake RD6006P device, in raw register values.
@@ -101,15 +102,27 @@ def any_value(value: object) -> Any:
     return value
 
 
-def reader(layout: Mapping[Field, Register], field: Field) -> RegRead:
+def reader(layout: Mapping[Any, Register] | Layout, field: str) -> RegRead:
     """Return a field's read codec, failing the test if it has none."""
-    read = layout[field].read
+    if isinstance(layout, Layout):
+        located = layout.resolve(FieldRef(field))
+        assert located is not None
+        register = located.reg
+    else:
+        register = layout[field]
+    read = register.read
     assert read is not None
     return read
 
 
-def writer(layout: Mapping[Field, Register], field: Field) -> RegWrite:
+def writer(layout: Mapping[Any, Register] | Layout, field: str) -> RegWrite:
     """Return a field's write codec, failing the test if it has none."""
-    write = layout[field].write
+    if isinstance(layout, Layout):
+        located = layout.resolve(FieldRef(field))
+        assert located is not None
+        register = located.reg
+    else:
+        register = layout[field]
+    write = register.write
     assert write is not None
     return write
