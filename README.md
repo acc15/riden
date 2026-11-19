@@ -4,12 +4,15 @@ An asynchronous client for Riden laboratory power supplies (RD6006, RD6006P,
 RD6006-Max, RD6012, RD6012P, RD6012H, RD6018, RD6018P, RD6024, RD6030, RK6006,
 RK6006H, RK6012, RK6018, RK4206H, RK8009).
 
-It speaks Modbus RTU over a regular serial port or Bluetooth Low Energy (BLE).
+It speaks Modbus RTU over a regular serial port, Bluetooth Low Energy (BLE),
+or through a separate [`modbus-hub`](https://pypi.org/project/modbus-hub/0.1.0/)
+TCP hub for WiFi modules.
 
 ## Features
 
 - asyncio API: `async with Riden.connect(...) as rd: ...`;
 - Bluetooth LE via `bt://` URLs on Linux, macOS and Windows (`bleak`);
+- WiFi through the separate `modbus-hub` TCP hub (`tcp://` URLs);
 - Modbus RTU through `tmodbus`, including CRC/framing, timeouts and automatic
   reconnect;
 - batched I/O instead of one transaction per field: any set of fields is read
@@ -25,6 +28,7 @@ It speaks Modbus RTU over a regular serial port or Bluetooth Low Energy (BLE).
 - Python 3.14 or newer;
 - `tmodbus[async-serial]` for Modbus RTU (installed automatically);
 - `bleak` for Bluetooth LE (installed automatically);
+- `modbus-hub` 0.1.0 for WiFi modules (a separate service, not a Python dependency);
 - Linux with BlueZ, macOS, or Windows for BLE; any OS supported by `serialx`
   for USB serial.
 
@@ -223,6 +227,93 @@ async with Riden.connect(
 No keepalive is needed: both tested Riden BLE modules keep an idle link for at
 least a minute. If a particular adapter drops an idle link, tmodbus's
 automatic reconnect opens it again on the next transaction.
+
+## WiFi (RD6012PW and other -W models)
+
+The stock Riden WiFi module is a **TCP client**, not a server: it connects to a
+configured server on port `8080` and exchanges Modbus RTU frames over that
+socket. `riden` therefore does not connect to the power supply directly.
+Instead, run [`modbus-hub` 0.1.0](https://pypi.org/project/modbus-hub/0.1.0/)
+— a small TCP hub that accepts the module's connection, keeps it open, and
+exposes it as RTU over TCP:
+
+- device listener: `8080` (where the WiFi module connects);
+- client listener: `5020` by default;
+- mappings are `IP -> unit ID` in `modbus_hub.toml`.
+
+Install it:
+
+```sh
+uv add modbus-hub==0.1.0
+```
+
+or:
+
+```sh
+pip install modbus-hub==0.1.0
+```
+
+Example `modbus_hub.toml`:
+
+```toml
+[server]
+device_port = 8080
+client_port = 5020
+
+[devices]
+"192.168.1.51" = 1
+```
+
+`192.168.1.51` is the supply's LAN address and `1` is the Modbus unit ID set
+in its menu. Keep device IPs stable (DHCP reservations): unknown IPs are
+logged and rejected. Run the hub on the machine that will hold the
+connection:
+
+```sh
+modbus-hub modbus_hub.toml
+```
+
+For the power supply:
+
+- 2.4 GHz WiFi only; WPA2; router AP isolation and WMM off;
+- menu: `Communication Interface = WiFi`, `Address = <unit ID>`;
+- the module must be provisioned with the **hub's IP**, not the phone's.
+
+A ready-made two-phase ESP-Touch provisioning script is available in
+[pgreenland/RidenRD60xxMQTT](https://github.com/pgreenland/RidenRD60xxMQTT/blob/main/provisioning/provision.py):
+
+```sh
+python3 provision.py 'SSID' 'password' '<hub_ip>' --adapter_ip <wifi-ip>
+```
+
+It is a third-party GPL-3.0 tool and is not part of `riden`. On macOS,
+connect to a 2.4 GHz network and allow Local Network access for the terminal.
+
+Once the supply is connected (the hub log shows `device <ip> -> unit 1`),
+connect through the hub:
+
+```python
+async with Riden.connect(
+    "tcp://<hub_ip>:<hub_port>", address=<psu_address>
+) as rd:
+    print(await rd.status())
+```
+
+For the example above:
+
+```python
+async with Riden.connect("tcp://192.168.1.24:5020", address=1) as rd:
+    ...
+```
+
+`address` is the unit ID configured in the supply's menu and in
+`modbus_hub.toml`. The hub routes the connection by the first byte of the
+first RTU frame; after that it is a transparent byte bridge. The hub keeps the
+supply connection open across client sessions and allows one client per
+supply. It speaks **Modbus RTU over TCP**, not Modbus TCP (no MBAP).
+
+Start the hub before powering the supply. If the supply does not reconnect
+after a hub restart, power-cycle it.
 
 ## Model metadata
 
