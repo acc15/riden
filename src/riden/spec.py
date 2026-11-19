@@ -16,9 +16,8 @@ from types import MappingProxyType
 from typing import Any
 
 from .enums import Mode, Protection
-from .field import Field
+from .field import Field, PresetParam
 from .layout import Layout, PresetLayout
-from .preset import PresetParam
 from .register import DepTarget, Register, Registers, RegRead
 
 # The device accepts a setpoint slightly above the nominal limit and silently

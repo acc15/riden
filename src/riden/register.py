@@ -5,8 +5,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from .field import Field
-from .preset import PresetField, PresetParam
+from .field import Field, PresetField, PresetParam
 
 type Registers = tuple[int, ...]
 
@@ -39,7 +38,7 @@ class Register:
 
     ``deps`` maps the name a codec sees to the field the value is read from.
     Keys are codec-side aliases, values are absolute fields or a
-    :class:`riden.preset.PresetParam` meaning "the same preset's parameter".
+    :class:`riden.field.PresetParam` meaning "the same preset's parameter".
     The layout resolves relative targets before calling a codec.
     """
 

@@ -8,8 +8,7 @@ from typing import Any, cast
 
 import pytest
 
-from riden.field import Field, FieldRef, flatten_fields, merge_fields
-from riden.preset import PresetField, PresetParam
+from riden.field import Field, PresetField, PresetParam, flatten_fields, merge_fields, ref
 
 
 def test_field_str() -> None:
@@ -55,7 +54,7 @@ def test_flatten_fields_rejects_other_types() -> None:
 def test_merge_fields_normalizes_keys_and_later_mappings_win() -> None:
     merged = merge_fields({"v_set": 1.0}, {Field.V_SET: 2.0, Field.I: 0.5})
     assert merged == {Field.V_SET: 2.0, Field.I: 0.5}
-    assert all(isinstance(field, FieldRef) for field in merged)
+    assert all(isinstance(field, (Field, PresetField)) for field in merged)
 
 
 def test_merge_fields_without_mappings_is_empty() -> None:
@@ -63,27 +62,24 @@ def test_merge_fields_without_mappings_is_empty() -> None:
 
 
 def test_field_ref_parses_global_and_preset_names() -> None:
-    assert FieldRef("v_set").target is Field.V_SET
-    assert FieldRef("m1_i_range").target == PresetField(1, PresetParam.I_RANGE)
-    assert FieldRef(Field.V) == Field.V
-    assert FieldRef(PresetField(1, PresetParam.V)) == "m1_v"
-
-    ref = FieldRef(Field.V)
-    assert FieldRef(ref) is ref
+    assert ref("v_set") is Field.V_SET
+    assert ref("m1_i_range") == PresetField(1, PresetParam.I_RANGE)
+    assert ref(Field.V) is Field.V
+    assert ref(PresetField(1, PresetParam.V)) == "m1_v"
 
 
 def test_field_ref_rejects_bare_preset_param() -> None:
-    with pytest.raises(TypeError, match="must be indexed"):
-        FieldRef(cast(Any, PresetParam.V))
+    with pytest.raises(TypeError, match="not a field"):
+        ref(cast(Any, PresetParam.V))
 
 
 def test_flatten_fields_accepts_field_refs() -> None:
-    ref = FieldRef(Field.V)
-    assert list(flatten_fields([ref, [ref]])) == [ref, ref]
+    field = ref(Field.V)
+    assert list(flatten_fields([field, [field]])) == [field, field]
 
 
 def test_merge_fields_accepts_field_ref_keys() -> None:
-    ref = FieldRef(Field.V)
-    merged = merge_fields({ref: 1.0})
-    assert merged[ref] == 1.0
-    assert next(iter(merged)) is ref
+    field = ref(Field.V)
+    merged = merge_fields({field: 1.0})
+    assert merged[field] == 1.0
+    assert next(iter(merged)) is field

@@ -7,8 +7,7 @@ from graphlib import CycleError, TopologicalSorter
 from types import MappingProxyType
 from typing import Any
 
-from .field import Field, FieldRef
-from .preset import PresetField, PresetParam
+from .field import Field, FieldRef, PresetField, PresetParam
 from .register import LocatedRegister, Register, Registers, RegRead, RegWrite
 
 
@@ -75,10 +74,9 @@ class Layout:
     presets: PresetLayout = PresetLayout()
 
     def resolve(self, field: FieldRef) -> LocatedRegister | None:
-        target = field.target
-        if isinstance(target, PresetField):
-            return self.presets.resolve(target)
-        register = self.registers.get(target)
+        if isinstance(field, PresetField):
+            return self.presets.resolve(field)
+        register = self.registers.get(field)
         return None if register is None else LocatedRegister(register.addr, register)
 
     def addr(self, field: FieldRef) -> int:
@@ -89,19 +87,17 @@ class Layout:
 
     def fields(self) -> Iterator[FieldRef]:
         """Iterate over every field in the layout, including all presets."""
-        for field in self.registers:
-            yield FieldRef(field)
+        yield from self.registers
         for num in range(self.presets.count):
             for param in self.presets.template:
-                yield FieldRef(PresetField(num, param))
+                yield PresetField(num, param)
 
     def _target(self, ref: FieldRef, target: Field | PresetField | PresetParam) -> FieldRef:
         if isinstance(target, PresetParam):
-            field = ref.target
-            if not isinstance(field, PresetField):
+            if not isinstance(ref, PresetField):
                 raise TypeError("relative preset dependency outside a preset")
-            return FieldRef(PresetField(field.num, target))
-        return FieldRef(target)
+            return PresetField(ref.num, target)
+        return target
 
     def deps(self, field: FieldRef) -> Mapping[Field, FieldRef]:
         """Return a field's dependencies with preset-relative targets resolved."""
@@ -232,18 +228,17 @@ class Layout:
         the seeded value.  Both the input and the result are keyed by
         :class:`FieldRef`; the public ``str`` names are applied by the client.
         """
-        values: dict[FieldRef, Any] = {FieldRef(key): value for key, value in initial.items()}
+        values: dict[FieldRef, Any] = dict(initial)
         for field, read in readers.items():
-            ref = FieldRef(field)
-            located = self.resolve(ref)
+            located = self.resolve(field)
             if located is None:
-                raise KeyError(ref.value)
+                raise KeyError(field.value)
             if located.reg.size == 0:
                 raw: Registers = ()
             else:
                 offset = located.addr - start
                 raw = regs[offset : offset + located.reg.size]
-            values[ref] = read(raw, self.make_deps(ref, values))
+            values[field] = read(raw, self.make_deps(field, values))
         return values
 
     def writers(self, fields: Iterable[FieldRef]) -> dict[FieldRef, RegWrite]:
@@ -284,32 +279,29 @@ class Layout:
         and size/range checks happen here, before anything is written.  Virtual
         fields are skipped.
         """
-        values: dict[FieldRef, Any] = {
-            FieldRef(key): value for key, value in {**dependencies, **updates}.items()
-        }
+        values: dict[FieldRef, Any] = {**dependencies, **updates}
         encoded: dict[FieldRef, Registers] = {}
         for field, value in updates.items():
-            ref = FieldRef(field)
-            located = self.resolve(ref)
+            located = self.resolve(field)
             if located is None:
-                raise KeyError(ref.value)
+                raise KeyError(field.value)
             register = located.reg
             try:
-                regs = writers[ref](value, self.make_deps(ref, values))
+                regs = writers[field](value, self.make_deps(field, values))
             except ValueError as exc:
-                raise ValueError(f"field {ref.value}: {exc}") from exc
+                raise ValueError(f"field {field.value}: {exc}") from exc
             if len(regs) != register.size:
                 raise ValueError(
-                    f"field {ref.value} produced {len(regs)} registers, "
+                    f"field {field.value} produced {len(regs)} registers, "
                     f"expected {register.size}"
                 )
             if any(reg < 0 or reg > 0xFFFF for reg in regs):
                 raise ValueError(
-                    f"field {ref.value} produced out-of-range registers: {regs}"
+                    f"field {field.value} produced out-of-range registers: {regs}"
                 )
             if register.size == 0:
                 continue
-            encoded[ref] = regs
+            encoded[field] = regs
         return encoded
 
     def _write_predecessors(

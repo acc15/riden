@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
 
-from riden.field import FieldRef
+from riden.field import ref
 from riden.layout import Layout
 from riden.register import Register, Registers, RegRead, RegWrite
 
@@ -105,7 +105,7 @@ def any_value(value: object) -> Any:
 def reader(layout: Mapping[Any, Register] | Layout, field: str) -> RegRead:
     """Return a field's read codec, failing the test if it has none."""
     if isinstance(layout, Layout):
-        located = layout.resolve(FieldRef(field))
+        located = layout.resolve(ref(field))
         assert located is not None
         register = located.reg
     else:
@@ -118,7 +118,7 @@ def reader(layout: Mapping[Any, Register] | Layout, field: str) -> RegRead:
 def writer(layout: Mapping[Any, Register] | Layout, field: str) -> RegWrite:
     """Return a field's write codec, failing the test if it has none."""
     if isinstance(layout, Layout):
-        located = layout.resolve(FieldRef(field))
+        located = layout.resolve(ref(field))
         assert located is not None
         register = located.reg
     else:

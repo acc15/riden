@@ -167,18 +167,16 @@ class Riden:
             layout = model.value.layout()
             decoded = layout.decode(
                 layout.readers(
-                    layout.dependency_order(
-                        (FieldRef(Field.ID), FieldRef(Field.SN), FieldRef(Field.FW))
-                    )
+                    layout.dependency_order((Field.ID, Field.SN, Field.FW))
                 ),
                 tuple(raw), 
                 0
             )
             self.state = Riden.State(
                 client=self.client,
-                id=decoded[FieldRef(Field.ID)],
-                sn=decoded[FieldRef(Field.SN)],
-                fw=decoded[FieldRef(Field.FW)],
+                id=decoded[Field.ID],
+                sn=decoded[Field.SN],
+                fw=decoded[Field.FW],
                 model=model,
                 layout=layout,
             )

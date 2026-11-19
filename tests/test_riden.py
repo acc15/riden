@@ -8,9 +8,8 @@ from bleak.backends.device import BLEDevice
 from tmodbus import AsyncModbusClient
 
 from riden.ble import BleTransport
-from riden.field import Field
+from riden.field import Field, PresetField, PresetParam
 from riden.model import Model
-from riden.preset import PresetField, PresetParam
 from riden.riden import ModbusClient, Riden
 from tests.conftest import FakeClient, Op, Tx
 
