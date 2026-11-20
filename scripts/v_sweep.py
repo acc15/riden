@@ -5,7 +5,7 @@ import time
 
 import config
 
-from riden import Riden
+from riden import Field, Riden
 
 
 async def main() -> None:
@@ -17,7 +17,7 @@ async def main() -> None:
                 await rd.write(v_set=v)
                 v_set_time = time.perf_counter()
                 await asyncio.sleep(2)
-                print(await rd.status())
+                print(await rd.read(Field.V, Field.I, Field.P, Field.V_IN))
                 end = time.perf_counter()
                 print(
                     f"executed in {end-start}s, v_set in {v_set_time-start}s"

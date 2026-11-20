@@ -13,4 +13,4 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S"
 )
 logging.getLogger("riden").setLevel(logging.DEBUG)
-logging.getLogger("tmodbus").setLevel(logging.DEBUG)
+# logging.getLogger("tmodbus").setLevel(logging.DEBUG)

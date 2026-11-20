@@ -320,10 +320,6 @@ class Riden:
         for start, regs in layout.write_blocks(encoded):
             await state.client.write_multiple_registers(start, list(regs))
 
-    def identity(self) -> str:
-        state = self.state
-        return f"model={state.model} type={state.id} sn={state.sn:08X} fw={state.fw:.2f}"
-
     @property
     def is_open(self) -> bool:
         """Whether the client has been opened and not closed since.
@@ -350,27 +346,3 @@ class Riden:
 
     async def __aexit__(self, *_):
         await self.close()
-
-    _STATUS_ROWS = (
-        ("input", (Field.V_IN,), "{:.2f}V"),
-        ("set", (Field.V_SET, Field.I_SET), "{:.3f} V, {:.3f} A"),
-        ("output", (Field.V, Field.I, Field.P), "{:.3f} V, {:.3f} A, {:.3f} W"),
-        ("enabled", (Field.EN,), "{}"),
-        ("mode", (Field.MODE,), "{}"),
-        ("protection", (Field.PROTECTION,), "{}"),
-        ("temp", (Field.TEMP_C,), "{} C"),
-    )
-
-    async def status(self) -> str:
-        fields: list[Field] = []
-        for _, row_fields, _ in self._STATUS_ROWS:
-            fields.extend(row_fields)
-        values = await self.read(*dict.fromkeys(fields))
-
-        rows = [
-            (label, template.format(*(values[field] for field in row_fields)))
-            for label, row_fields, template in self._STATUS_ROWS
-        ]
-        width = max(len(label) for label, _ in rows) + 2
-        body = "\n".join(f"{label + ':':<{width}}{value}" for label, value in rows)
-        return f"{self.identity()}\n{body}"

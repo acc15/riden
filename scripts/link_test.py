@@ -3,9 +3,9 @@
 
 Sequence:
   1. connect (retries, no controller power-cycle by default)
-  2. read status a few times with the output OFF
+  2. read values a few times with the output OFF
   3. set a safe 5 V / 10 mA and turn the output ON
-  4. read status repeatedly
+  4. read values repeatedly
   5. always set 0 V and switch the output OFF
 
 If this fails while the 500-transaction read-only test passes, the problem is
@@ -22,7 +22,7 @@ from riden import Riden
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument("port", type=str, help="bt://ADDRESS or a serial device")
-p.add_argument("--cycles", type=int, default=20, help="status reads with output ON")
+p.add_argument("--cycles", type=int, default=20, help="value reads with output ON")
 p.add_argument("--interval", type=float, default=0.5)
 p.add_argument("--voltage", type=float, default=5.0)
 p.add_argument("--current", type=float, default=0.01)
@@ -34,14 +34,13 @@ async def main() -> None:
     ok_on = 0
     async with Riden.connect(args.port, delay=0.2) as rd:
         try:
-            print(rd.identity())
             await rd.write(i_set=args.current, v_set=args.voltage, en=False)
 
             print(
                 f"--- output OFF, {args.voltage:g} V / {args.current * 1e3:g} mA set ---"
             )
             for _ in range(3):
-                print(await rd.status())
+                print(await rd.read("v", "i", "p"))
                 ok_off += 1
                 await asyncio.sleep(args.interval)
 
@@ -49,7 +48,7 @@ async def main() -> None:
             print("--- output ON ---")
             for i in range(args.cycles):
                 try:
-                    await rd.status()
+                    await rd.read("v", "i", "p")
                 except Exception as exc:  # noqa: BLE001 - report any link failure
                     print(f"[{i:03d}] FAIL: {type(exc).__name__}: {exc}")
                     break
@@ -67,7 +66,7 @@ async def main() -> None:
                     "WARNING: TURN THE RK6012 OUTPUT OFF MANUALLY"
                 )
 
-    print(f"status reads: OFF {ok_off}/3, ON {ok_on}/{args.cycles}")
+    print(f"value reads: OFF {ok_off}/3, ON {ok_on}/{args.cycles}")
 
 
 asyncio.run(main())

@@ -279,26 +279,6 @@ async def test_context_manager_closes_client() -> None:
     assert client.closed
 
 
-async def test_identity() -> None:
-    async with Riden(FakeClient()) as rd:
-        assert rd.identity() == (
-            "model=Model.RD6006P type=60065 sn=00000007 fw=12.34"
-        )
-
-
-async def test_status() -> None:
-    async with Riden(FakeClient()) as rd:
-        status = await rd.status()
-    assert "model=Model.RD6006P type=60065 sn=00000007 fw=12.34" in status
-    assert "input:      24.00V" in status
-    assert "set:        12.500 V, 1.000 A" in status
-    assert "output:     12.000 V, 0.500 A, 60.000 W" in status
-    assert "enabled:    True" in status
-    assert "mode:       0" in status
-    assert "protection: 0" in status
-    assert "temp:       0 C" in status
-
-
 # RD6012P: current is scaled by the selected range, per output and per preset.
 
 

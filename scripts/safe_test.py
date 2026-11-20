@@ -17,7 +17,6 @@ async def main() -> None:
     async with Riden.connect(args.url, delay=0.02) as rd:
         try:
             print("=== before ===")
-            print(await rd.status())
             print(
                 "values:",
                 await rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
@@ -26,7 +25,6 @@ async def main() -> None:
             await rd.write(v_set=5.0, i_set=0.05)
             await asyncio.sleep(0.5)
             print("\n=== set 5.00 V / 0.050 A, output still off ===")
-            print(await rd.status())
             print(
                 "values:",
                 await rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
@@ -35,7 +33,6 @@ async def main() -> None:
             await rd.write(en=True)
             await asyncio.sleep(1.0)
             print("\n=== output ON ===")
-            print(await rd.status())
             print(
                 "values:",
                 await rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
@@ -43,13 +40,15 @@ async def main() -> None:
 
             await asyncio.sleep(1.0)
             print("\n=== output ON (second read) ===")
-            print(await rd.status())
+            print(
+                "values:",
+                await rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),
+            )
         finally:
             try:
                 await rd.write(en=False, v_set=0.0)
                 await asyncio.sleep(0.3)
                 print("\n=== output OFF ===")
-                print(await rd.status())
                 print(
                     "values:",
                     await rd.read(Field.V_SET, Field.I_SET, Field.EN, Field.V, Field.I),

@@ -58,7 +58,7 @@ from riden import Riden
 
 async def main() -> None:
     async with Riden.connect("bt://E1:F9:C6:24:71:C8") as rd:
-        print(await rd.status())
+        print(await rd.read("v", "i", "p", "v_in"))
 
         # Several fields — a single device transaction.
         v, i, p = (await rd.read("v", "i", "p")).values()
@@ -191,7 +191,7 @@ async def main() -> None:
             for voltage in range(0, 60, 5):
                 await rd.write(v_set=float(voltage))
                 await asyncio.sleep(2)
-                print(await rd.status())
+                print(await rd.read("v", "i", "p", "v_in"))
         finally:
             await rd.write(v_set=0.0, en=False)
 
@@ -495,6 +495,19 @@ Since every value is validated before the first transaction, an invalid value
 never leaves the device partially updated. A link failure between the
 transactions still can: if the second write fails, the first one has
 already been applied.
+
+## Tk UI
+
+`scripts/tk_ui.py` is a small Tkinter demo: live readings, setpoints applied
+with Enter and an output toggle, polled every 500 ms.
+
+```sh
+uv run scripts/tk_ui.py "bt://E1:F9:C6:24:71:C8"
+```
+
+Pass a serial path or a `bt://` URL; without an argument the script uses
+`DEFAULT_URL` from `scripts/config.py`. The seven-segment digits use the DSEG7
+font when it is installed and plain monospace otherwise.
 
 ## Development
 
