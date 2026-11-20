@@ -5,14 +5,14 @@ RD6006-Max, RD6012, RD6012P, RD6012H, RD6018, RD6018P, RD6024, RD6030, RK6006,
 RK6006H, RK6012, RK6018, RK4206H, RK8009).
 
 It speaks Modbus RTU over a regular serial port, Bluetooth Low Energy (BLE),
-or through a separate [`modbus-hub`](https://pypi.org/project/modbus-hub/0.1.0/)
+or through a separate [`modbus_hub`](https://pypi.org/project/modbus_hub/0.1.0/)
 TCP hub for WiFi modules.
 
 ## Features
 
 - asyncio API: `async with Riden.connect(...) as rd: ...`;
 - Bluetooth LE via `bt://` URLs on Linux, macOS and Windows (`bleak`);
-- WiFi through the separate `modbus-hub` TCP hub (`tcp://` URLs);
+- WiFi through the separate `modbus_hub` TCP hub (`tcp://` URLs);
 - Modbus RTU through `tmodbus`, including CRC/framing, timeouts and automatic
   reconnect;
 - batched I/O instead of one transaction per field: any set of fields is read
@@ -28,7 +28,7 @@ TCP hub for WiFi modules.
 - Python 3.14 or newer;
 - `tmodbus[async-serial]` for Modbus RTU (installed automatically);
 - `bleak` for Bluetooth LE (installed automatically);
-- `modbus-hub` 0.1.0 for WiFi modules (a separate service, not a Python dependency);
+- `modbus_hub` 0.1.0 for WiFi modules (a separate service, not a Python dependency);
 - Linux with BlueZ, macOS, or Windows for BLE; any OS supported by `serialx`
   for USB serial.
 
@@ -233,7 +233,7 @@ automatic reconnect opens it again on the next transaction.
 The stock Riden WiFi module is a **TCP client**, not a server: it connects to a
 configured server on port `8080` and exchanges Modbus RTU frames over that
 socket. `riden` therefore does not connect to the power supply directly.
-Instead, run [`modbus-hub` 0.1.0](https://pypi.org/project/modbus-hub/0.1.0/)
+Instead, run [`modbus_hub` 0.1.0](https://pypi.org/project/modbus_hub/0.1.0/)
 — a small TCP hub that accepts the module's connection, keeps it open, and
 exposes it as RTU over TCP:
 
@@ -244,13 +244,13 @@ exposes it as RTU over TCP:
 Install it:
 
 ```sh
-uv add modbus-hub==0.1.0
+uv add modbus_hub==0.1.0
 ```
 
 or:
 
 ```sh
-pip install modbus-hub==0.1.0
+pip install modbus_hub==0.1.0
 ```
 
 Example `modbus_hub.toml`:
@@ -270,7 +270,7 @@ logged and rejected. Run the hub on the machine that will hold the
 connection:
 
 ```sh
-modbus-hub modbus_hub.toml
+modbus_hub modbus_hub.toml
 ```
 
 For the power supply:
