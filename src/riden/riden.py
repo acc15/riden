@@ -1,6 +1,7 @@
 """Asynchronous client for Riden power supplies."""
 import contextlib
-from collections.abc import Iterable, Mapping
+from collections.abc import Generator, Iterable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Protocol, Self, override
@@ -76,15 +77,38 @@ class Riden:
         model: Model
         layout: Layout
 
-    def __init__(self, client: ModbusClient):
+    def __init__(
+        self,
+        client: ModbusClient,
+        *,
+        deps: FieldMapping = MappingProxyType({}),
+    ):
         self._client = client
         self._state: Riden.State | None = None
+        self._deps: ContextVar[Mapping[FieldAny, Any]] = ContextVar(
+            f"riden_deps_{id(self)}",
+            default=MappingProxyType(merge_fields(deps)),
+        )
 
     @property
     def state(self) -> Riden.State:
         if (state := self._state) is None:
             raise RuntimeError("Riden is not initialized")
         return state
+
+    @contextlib.contextmanager
+    def deps(self, *values: FieldMapping, **fields: Any) -> Generator[None]:
+        """Apply default dependencies to calls made inside the block.
+
+        Explicit ``deps=`` arguments override these defaults, and written
+        fields override both.  Scopes nest and are isolated per asyncio task.
+        """
+        current = self._deps.get()
+        token = self._deps.set({**current, **merge_fields(*values, fields)})
+        try:
+            yield
+        finally:
+            self._deps.reset(token)
 
     @classmethod
     def connect(
@@ -98,6 +122,7 @@ class Riden:
         delay: float = DEFAULT_DELAY,
         auto_reconnect: bool = True,
         response_retry: AsyncRetrying | None = DEFAULT_RESPONSE_RETRY,
+        deps: FieldMapping = MappingProxyType({}),
     ) -> Self:
         """Return a client for a serial port or a Bluetooth LE URL.
 
@@ -105,6 +130,9 @@ class Riden:
         ``async with`` or ``await open()``.  ``timeout`` is the Modbus
         response timeout in seconds, ``delay`` the pause between transactions,
         and ``auto_reconnect`` enables tmodbus's automatic reconnect.
+
+        ``deps`` applies default dependencies to every read and write for the
+        whole session; explicit ``deps=`` arguments override them.
 
         ``bt://`` URLs pass everything after the scheme to bleak as the BLE
         address; ``connect_timeout`` is a regular argument::
@@ -153,7 +181,7 @@ class Riden:
                 )
             port = AsyncModbusClient(port, unit_id=address)
 
-        return cls(port)
+        return cls(port, deps=deps)
 
     async def open(self) -> Self:
         if self._state is not None:
@@ -243,7 +271,7 @@ class Riden:
         if not requested:
             return {}
 
-        supplied = merge_fields(deps)
+        supplied = merge_fields(self._deps.get(), deps)
         values = await self._read(requested, supplied)
 
         # Dependencies are not part of the result: only what was requested.
@@ -272,7 +300,7 @@ class Riden:
 
         # Written fields are authoritative: a deps value for the same field is
         # ignored when the frame is encoded.
-        supplied = merge_fields(deps, updates)
+        supplied = merge_fields(self._deps.get(), deps, updates)
 
         # Support and writability are validated (and codecs collected) by the
         # layout, before any I/O.

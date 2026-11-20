@@ -312,6 +312,34 @@ async def rd6012p() -> tuple[Riden, FakeClient]:
     return rd, client
 
 
+async def test_init_accepts_initial_deps() -> None:
+    client = FakeClient([0] * 160)
+    client.registers[0] = 60125
+    rd = Riden(client, deps={"i_range": 0})
+    await rd.open()
+    client.transactions.clear()
+    client.registers[11] = 5000
+
+    values = await rd.read("i")
+
+    assert values["i"] == pytest.approx(0.5)
+    assert client.transactions == [Tx.read(11, 1)]
+
+
+async def test_connect_accepts_initial_deps() -> None:
+    client = FakeClient([0] * 160)
+    client.registers[0] = 60125
+    rd = Riden.connect(client, deps={"i_range": 0})
+    await rd.open()
+    client.transactions.clear()
+    client.registers[11] = 5000
+
+    values = await rd.read("i")
+
+    assert values["i"] == pytest.approx(0.5)
+    assert client.transactions == [Tx.read(11, 1)]
+
+
 async def test_rd6012p_read_uses_selected_range() -> None:
     rd, client = await rd6012p()
     client.registers[11] = 1234
@@ -355,6 +383,49 @@ async def test_read_deps_use_known_current_range_without_reading_it() -> None:
 
     assert values["i"] == pytest.approx(0.5)  # decoded with the 6 A scale
     assert client.transactions == [Tx.read(11, 1)]
+
+
+async def test_read_deps_context_skips_range_read() -> None:
+    rd, client = await rd6012p()
+    client.registers[11] = 5000
+
+    with rd.deps({"i_range": 0}):
+        values = await rd.read("i")
+
+    assert values["i"] == pytest.approx(0.5)
+    assert client.transactions == [Tx.read(11, 1)]
+
+
+async def test_deps_context_is_nested_and_explicit_deps_win() -> None:
+    rd, client = await rd6012p()
+    client.registers[11] = 5000
+
+    with rd.deps({"i_range": 0}):
+        outer = await rd.read("i")
+        with rd.deps({"i_range": 1}):
+            inner = await rd.read("i")
+        restored = await rd.read("i")
+        explicit = await rd.read("i", deps={"i_range": 1})
+
+    assert outer["i"] == pytest.approx(0.5)
+    assert inner["i"] == pytest.approx(5.0)
+    assert restored["i"] == pytest.approx(0.5)
+    assert explicit["i"] == pytest.approx(5.0)
+    assert client.transactions == [
+        Tx.read(11, 1),
+        Tx.read(11, 1),
+        Tx.read(11, 1),
+        Tx.read(11, 1),
+    ]
+
+
+async def test_write_deps_context_skips_range_read() -> None:
+    rd, client = await rd6012p()
+
+    with rd.deps({"i_range": 0}):
+        await rd.write(i_set=1.0)
+
+    assert client.transactions == [Tx.write(9, [10000])]
 
 
 async def test_read_deps_accept_field_keys() -> None:

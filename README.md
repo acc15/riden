@@ -347,6 +347,25 @@ values = await rd.read(
 )
 ```
 
+When the same dependencies are needed repeatedly, apply them to a block:
+
+```python
+with rd.deps({"i_range": 0}):
+    while True:
+        values = await rd.read("i")
+        await asyncio.sleep(1)
+```
+
+The scope nests, and an explicit `deps=` argument overrides the scope.
+Dependencies can also be established for the whole session:
+
+```python
+async with Riden.connect(
+    "bt://E1:F9:C6:24:71:C8", deps={"i_range": 0}
+) as rd:
+    value = await rd.read("i")  # I_RANGE is taken from the session defaults
+```
+
 Measured current needs only the scale, so a known scale alone avoids the range
 register:
 
